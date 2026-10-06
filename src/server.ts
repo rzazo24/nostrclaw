@@ -7,7 +7,7 @@ import { buildReport, kindName, parseProfile, viewEvent } from './analysis.js'
 import { VERSION, type Config } from './config.js'
 import { realApi, type NostrApi } from './nostr/client.js'
 import { createSigningContext, registerSigningTools, type SigningContext } from './signing/tools.js'
-import { compareSamples, isStoredKind } from './compare.js'
+import { coverage, eventsPerHour, isStoredKind } from './compare.js'
 import { cleanText, resolveRelay, toHexPubkey, UNTRUSTED_NOTE } from './safety.js'
 import { NO_FACTS, pickCandidates, triage, WEIGHTS, type AuthorFacts } from './triage.js'
 
@@ -326,59 +326,74 @@ export function createServer(cfg: Config, api: NostrApi = realApi, clock: () => 
 
   server.registerTool('compare_relays', {
     title: 'Compare relays',
-    description: 'Compares several configured relays side by side: what each says about itself (NIP-11: software, supported NIPs, limits), how fast it answers, how busy it is, and how much of what it holds is ALSO on the others (a relay whose events are mostly elsewhere is a mirror; one with many events found nowhere else is a source). Samples are taken at the same moment and compared only inside the window every sample really covers, so a busy relay is not penalised for returning only its newest events. A relay that fails is reported and the others still compared.',
+    description: 'Compares several configured relays side by side: what each says about itself (NIP-11: software, supported NIPs, limits), how fast it answers, how busy it is (events per hour) and what kinds it holds, and — the useful part — PROPAGATION: it takes the recent events of one reference relay (default: the first configured, normally yours) and asks every other relay for those exact ids, so you see what share of them reached each one. Busy public relays return only their newest events, so samples are never compared directly. A relay that fails is reported and the others still compared; "0 events" comes with the reason the relay gave when it has one.',
     inputSchema: {
       relays: relaysParam,
-      hours: hoursParam(1, 24 * 7).describe('Window in hours to sample (default 1).'),
-      sampleLimit: z.number().int().min(10).max(1000).default(300).describe('Most events to fetch per relay.'),
+      reference: z.string().optional().describe('The relay whose recent events are looked for on the others (must be one of the compared relays). Default: the first.'),
+      hours: hoursParam(24, 24 * 7).describe('Window in hours to sample (default 24).'),
+      sampleLimit: z.number().int().min(10).max(1000).default(200).describe('Most events to fetch per relay; the reference relay contributes at most 200 of them to the propagation check.'),
     },
     annotations: READ_ONLY,
-  }, guard(async (a: { relays?: string[]; hours: number; sampleLimit: number }) => {
+  }, guard(async (a: { relays?: string[]; reference?: string; hours: number; sampleLimit: number }) => {
     const urls = pickRelays(a.relays), now = clock()
+    const ref = a.reference ? resolveRelay(a.reference, cfg) : urls[0]!
+    if (!urls.includes(ref)) throw new Error('the reference relay must be one of the compared relays')
     const limit = Math.min(a.sampleLimit, cfg.maxEvents), since = Math.floor(now - a.hours * 3600)
     const probes = await Promise.all(urls.map(async (url) => {
       const [info, sample] = await Promise.allSettled([api.nip11(url, opts), query(url, { since, limit }, limit)])
       return { url, info, sample }
     }))
-    const samples = probes.flatMap((p) => {
-      if (p.sample.status !== 'fulfilled') return []
-      const doc = p.info.status === 'fulfilled' ? p.info.value.doc : null
-      const cap = num(((doc?.limitation ?? {}) as Record<string, unknown>).max_limit)
-      // a relay may silently cap a request below the limit asked for: treat reaching its own advertised cap as truncation too
-      const events = p.sample.value.events
-      return [{ relay: p.url, events, truncated: events.length >= limit || (cap !== undefined && events.length >= cap), fetched: p.sample.value }]
-    })
-    const cmp = compareSamples(samples, since, now)
-    const overlap = new Map(cmp.perRelay.map((o) => [o.relay, o]))
-    const failed = probes.filter((p) => p.sample.status === 'rejected').map((p) => ({ relay: p.url, error: reason((p.sample as PromiseRejectedResult).reason) }))
+    const refSample = probes.find((p) => p.url === ref)!.sample
+    const refEvents = refSample.status === 'fulfilled' ? refSample.value.events.filter((e) => isStoredKind(e.kind)).slice(0, 200) : []
+    // propagation: ask each other relay for the reference's exact ids (in small batches: relays cap the size of an ids filter)
+    const held = new Map<string, Set<string> | undefined>(), finished = new Map<string, boolean>()
+    await Promise.all(urls.filter((u) => u !== ref && refEvents.length).map(async (url) => {
+      try {
+        const got = new Set<string>()
+        let complete = true
+        for (let i = 0; i < refEvents.length; i += 50) {
+          const ids = refEvents.slice(i, i + 50).map((e) => e.id)
+          const r = await query(url, { ids, limit: ids.length }, ids.length)
+          for (const e of r.events) if (ids.includes(e.id)) got.add(e.id)
+          complete = complete && r.eose
+        }
+        held.set(url, got); finished.set(url, complete)
+      } catch { held.set(url, undefined) }
+    }))
+    const cov = new Map(coverage(refEvents, held, finished).map((c) => [c.relay, c]))
     const relays = probes.map((p) => {
       const doc = p.info.status === 'fulfilled' ? p.info.value.doc : null
       const lim = (doc?.limitation ?? {}) as Record<string, unknown>
-      const s = samples.find((x) => x.relay === p.url)
+      const sm = p.sample.status === 'fulfilled' ? p.sample.value : undefined
+      const cap = num(lim.max_limit)
+      const truncated = sm ? sm.events.length >= limit || (cap !== undefined && sm.events.length >= cap) : false
       const kinds = new Map<number, number>()
-      for (const e of s?.events ?? []) if (isStoredKind(e.kind)) kinds.set(e.kind, (kinds.get(e.kind) ?? 0) + 1)
+      for (const e of sm?.events ?? []) if (isStoredKind(e.kind)) kinds.set(e.kind, (kinds.get(e.kind) ?? 0) + 1)
       const nips = Array.isArray(doc?.supported_nips) ? (doc!.supported_nips as unknown[]).filter((n) => Number.isInteger(n)) as number[] : undefined
+      const c = cov.get(p.url)
       return {
-        relay: p.url,
-        reachable: { http: p.info.status === 'fulfilled', websocket: !!s },
-        latencyMs: { nip11: p.info.status === 'fulfilled' ? p.info.value.ms : undefined, websocketQuery: s?.fetched.ms },
+        relay: p.url, isReference: p.url === ref || undefined,
+        reachable: { http: p.info.status === 'fulfilled', websocket: !!sm },
+        latencyMs: { nip11: p.info.status === 'fulfilled' ? p.info.value.ms : undefined, websocketQuery: sm?.ms },
         supportedNips: nips?.slice(0, 80),
         limitation: Object.fromEntries(Object.entries(lim).filter(([, v]) => typeof v === 'number' || typeof v === 'boolean').slice(0, 30)),
-        sample: s ? { events: s.events.length, truncated: s.truncated, complete: s.fetched.eose, topKinds: [...kinds.entries()].sort((x, y) => y[1] - x[1]).slice(0, 5).map(([kind, n]) => ({ kind, name: kindName(kind), n })) } : undefined,
-        inCommonWindow: overlap.get(p.url),
-        error: failed.find((f) => f.relay === p.url)?.error ?? (p.info.status === 'rejected' ? `NIP-11: ${reason(p.info.reason)}` : undefined),
+        activity: sm ? {
+          sampled: sm.events.length, sampleTruncated: truncated, complete: sm.eose, eventsPerHour: eventsPerHour(sm.events, truncated, since, now),
+          topKinds: [...kinds.entries()].sort((x, y) => y[1] - x[1]).slice(0, 5).map(([kind, n]) => ({ kind, name: kindName(kind), n })),
+          ...(sm.events.length === 0 ? { whyEmpty: sm.closed ? cleanText(sm.closed, 200) : sm.notices.length ? sm.notices.map((n) => cleanText(n, 200)) : 'the relay answered but returned nothing for this window (it may restrict broad queries or hold nothing recent)' } : {}),
+        } : undefined,
+        hasTheReferenceEvents: c ? { found: c.found, of: c.checked, fraction: c.fraction !== undefined ? Math.round(c.fraction * 1000) / 1000 : undefined, incomplete: c.incomplete } : undefined,
+        error: p.sample.status === 'rejected' ? reason(p.sample.reason) : p.info.status === 'rejected' ? `NIP-11: ${reason(p.info.reason)}` : undefined,
         untrusted: doc ? { name: cleanText(doc.name, 100), software: cleanText(doc.software, 120), version: cleanText(doc.version, 60) } : undefined,
       }
     })
     const nipLists = relays.flatMap((r) => (r.supportedNips ? [new Set(r.supportedNips)] : []))
     const allNips = new Set(nipLists.flatMap((s) => [...s]))
     return {
-      compared: samples.length, requestedWindowHours: a.hours,
-      commonWindow: { start: new Date(cmp.windowStart * 1000).toISOString(), hours: cmp.windowHours, shortened: cmp.shortened, why: cmp.shortened ? 'a relay returned only its newest events, so every relay is compared over the period that one really covers' : undefined },
-      distinctEventsSeen: cmp.distinctEvents, onEveryRelay: cmp.onEveryRelay,
+      reference: ref, referenceEventsChecked: refEvents.length, windowHours: a.hours,
       nips: nipLists.length > 1 ? { onAll: [...allNips].filter((n) => nipLists.every((s) => s.has(n))).sort((x, y) => x - y), onlySomeRelays: [...allNips].filter((n) => !nipLists.every((s) => s.has(n))).sort((x, y) => x - y) } : undefined,
       relays,
-      caveats: 'Each relay only knows what it was sent; "only here" means "not in the other relays\' samples", not "exists nowhere". Relays may silently cap a request below the limit asked for. Ephemeral events are ignored (relays do not store them).',
+      caveats: 'hasTheReferenceEvents = how many of the reference relay\'s recent events are held by that relay: a relay may lack one for many reasons (never sent, policy, expiry, deletion), so it is an observation, not a diagnosis. eventsPerHour of a truncated sample is computed from the span it covers. Ephemeral events are ignored (relays do not store them).',
       note: UNTRUSTED_NOTE,
     }
   }))
