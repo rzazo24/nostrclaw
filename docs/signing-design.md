@@ -100,6 +100,16 @@ event id, kind, content hash, relays and result. No content, no secrets, no URIs
 - The real stdio test keeps asserting that nothing but protocol touches stdout.
 - A manual test with the real Clave on the iPhone before declaring 0.2 done.
 
+## Notes from testing with the real Clave (iPhone, 2026-10-06)
+
+- A client-initiated `nostrconnect://` link works; Clave answers the handshake through `relay.powr.build`. The saved session resumes later without a new link.
+- Clave must be **open on screen**: when it was in the background it did not answer `get_public_key`, and it never announces a pending signature by itself.
+- With *low trust* Clave asks for every signature: a note was approved in 4.6 s and a reaction in 3.8 s (a person, so the speed check passes). *Medium trust*
+  auto-approves kinds 1, 6 and 7; that is faster but is the unsafe choice described below.
+- A first reaction that carried an extra `["k","1"]` tag stayed "pending" in Clave even after the user approved it (nothing came back, nostrclaw timed out and
+  published nothing); the same reaction with only `e` and `p` tags signed at once. It was not isolated whether the tag or having Clave on screen made the
+  difference, so `draft_event`'s description recommends plain `e`/`p` tags for reactions.
+
 ## Known limitation
 
 The confirmation question (MCP elicitation) controls publishing **through nostrclaw's tools**. It cannot control a model that has a shell and reads the saved app
