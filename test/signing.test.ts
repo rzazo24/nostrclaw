@@ -18,14 +18,14 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const yes: Elicit = () => ({ action: 'accept', content: { publish: true } })
 const no: Elicit = () => ({ action: 'decline' })
 
-interface Opts { policy?: Record<string, unknown>; signer?: Partial<Behaviour>; elicit?: Elicit; dirs?: { config: string; state: string }; connected?: boolean }
+interface Opts { identityWaitMs?: number; policy?: Record<string, unknown>; signer?: Partial<Behaviour>; elicit?: Elicit; dirs?: { config: string; state: string }; connected?: boolean }
 
 async function setup(o: Opts = {}) {
   const config = o.dirs?.config ?? fs.mkdtempSync(path.join(os.tmpdir(), 'nc-config-'))
   const state = o.dirs?.state ?? fs.mkdtempSync(path.join(os.tmpdir(), 'nc-state-'))
   // a person takes longer than 500 ms to decide in these tests; an "always allow" signer answers at once (the wide gap keeps a slow CI machine from confusing them)
   fs.writeFileSync(path.join(config, 'policy.json'), JSON.stringify({ minHumanApprovalMs: 500, signTimeoutMs: 2500, ...o.policy }))
-  const c: Config = cfg({ relays: [relay.url], allowPrivate: true, timeoutMs: 5000, signing: { enabled: true, signerRelays: [relay.url], configDir: config, stateDir: state } })
+  const c: Config = cfg({ relays: [relay.url], allowPrivate: true, timeoutMs: 5000, signing: { enabled: true, signerRelays: [relay.url], configDir: config, stateDir: state, identityWaitMs: o.identityWaitMs } })
   const fake = new FakeSigner(o.signer)
   const conn = await connect(c, undefined, undefined, o.elicit)
   closers.push(async () => { await fake.stop(); await conn.close() })
@@ -76,7 +76,7 @@ describe.skipIf(!bin)('signing (real relay + pretend NIP-46 signer)', () => {
     expect(r.json.claveLink).toBe('https://clave.casa/connect/?uri=' + encodeURIComponent(r.json.nostrconnectUri))
     expect(r.json.instructions).toMatch(/NOT to choose "always allow"/)
     const seen = await s.fake.scan(r.json.nostrconnectUri)
-    expect(seen.perms).toEqual(['sign_event:1', 'sign_event:7']) // exactly the kinds the policy allows, nothing blanket
+    expect(seen.perms).toEqual(['get_public_key', 'sign_event:1', 'sign_event:7']) // exactly the kinds the policy allows, nothing blanket
     expect(seen.relays).toEqual([relay.url]) // no trailing slash
     for (let i = 0; i < 50 && (await call(s.client, 'signer_status')).json.state !== 'connected'; i++) await sleep(100)
     const st = (await call(s.client, 'signer_status')).json
@@ -87,6 +87,27 @@ describe.skipIf(!bin)('signing (real relay + pretend NIP-46 signer)', () => {
     expect(content.signerPubkey).toBe(s.fake.signerPk)
     expect(JSON.stringify(content)).not.toContain(Buffer.from(s.fake.userSk).toString('hex')) // never the user's private key
     expect(JSON.stringify(st)).not.toContain('secret=')
+  })
+
+  it('a signer that accepts the connection but then goes silent (app suspended in the background) is reported clearly, and a retry works', async () => {
+    const s = await setup({ connected: false, identityWaitMs: 1500, signer: { silentAboutIdentity: true } })
+    const r = await call(s.client, 'signer_connect')
+    await s.fake.scan(r.json.nostrconnectUri)
+    // the handshake is done; now we are waiting for the signer to answer
+    let waiting = ''
+    for (let i = 0; i < 30 && !waiting; i++) { await sleep(50); const st = (await call(s.client, 'signer_status')).json; if (st.waitingFor === 'waiting-for-the-signer-to-answer') waiting = st.waitingFor }
+    expect(waiting).toBe('waiting-for-the-signer-to-answer')
+    await sleep(1800)
+    const st = (await call(s.client, 'signer_status')).json
+    expect(st.state).toBe('disconnected')
+    expect(st.lastError).toMatch(/Keep the signer app open/)
+    // the user brings the signer to the foreground and tries again
+    s.fake.behaviour.silentAboutIdentity = false
+    const again = await call(s.client, 'signer_connect')
+    expect(again.json.instructions).toMatch(/KEEP THE SIGNER APP OPEN/)
+    await s.fake.scan(again.json.nostrconnectUri)
+    for (let i = 0; i < 60 && (await call(s.client, 'signer_status')).json.state !== 'connected'; i++) await sleep(100)
+    expect((await call(s.client, 'signer_status')).json).toMatchObject({ state: 'connected', signingAs: nip19.npubEncode(s.fake.userPk) })
   })
 
   it('drafts first, then publishes after the user confirms: the note really reaches the relay, signed by the user\'s key', async () => {

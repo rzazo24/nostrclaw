@@ -12,6 +12,8 @@ export interface Behaviour {
   tamper?: boolean
   /** Sign with a different key than the one it announced. */
   wrongKey?: boolean
+  /** Accept the connection but never answer get_public_key (a signer app suspended in the background). */
+  silentAboutIdentity?: boolean
 }
 
 export class FakeSigner {
@@ -64,7 +66,7 @@ export class FakeSigner {
     switch (req.method) {
       case 'connect': return this.reply(ev.pubkey, { id: req.id, result: 'ack' })
       case 'ping': return this.reply(ev.pubkey, { id: req.id, result: 'pong' })
-      case 'get_public_key': return this.reply(ev.pubkey, { id: req.id, result: this.userPk })
+      case 'get_public_key': return this.behaviour.silentAboutIdentity ? undefined : this.reply(ev.pubkey, { id: req.id, result: this.userPk })
       case 'sign_event': {
         const b = this.behaviour
         if (b.decision === 'ignore') return

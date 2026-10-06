@@ -49,7 +49,7 @@ export function registerSigningTools(server: McpServer, cfg: Config, api: NostrA
     signRequestsLastHour: audit.signRequestsLastHour(),
   })
   const status = () => ({
-    state: signer.state, signingAs: npub(), signerRelays: signer.relays.length ? signer.relays : cfg.signing.signerRelays,
+    state: signer.state, waitingFor: signer.state === 'connecting' ? signer.phase : undefined, signingAs: npub(), signerRelays: signer.relays.length ? signer.relays : cfg.signing.signerRelays,
     approvalUrl: signer.authUrl, lastError: signer.lastError,
     autoApprovalSuspected: signer.autoApprovalSuspected || undefined, policy: policySummary(),
   })
@@ -63,12 +63,13 @@ export function registerSigningTools(server: McpServer, cfg: Config, api: NostrA
     if (signer.state === 'connected') return { ...status(), note: 'Already connected.' }
     if (bunker) { await signer.connectBunker(bunker); return status() }
     if (await signer.resume()) return { ...status(), note: 'Resumed the saved session.' }
-    const perms = policy.allowedKinds.slice(0, 10).map((k) => `sign_event:${k}`)
+    const perms = ['get_public_key', ...policy.allowedKinds.slice(0, 10).map((k) => `sign_event:${k}`)] // get_public_key: some signers only answer methods they were asked for
     const { uri, expiresInSeconds } = signer.startNostrConnect(perms)
     return {
       state: 'connecting', expiresInSeconds, nostrconnectUri: uri, claveLink: CLAVE + encodeURIComponent(uri),
       instructions: 'Ask the user to open the link in their signer (Clave on iPhone: claveLink; otherwise paste the nostrconnect:// URI) and approve the connection. ' +
-        'Tell them to approve each signing request when asked and NOT to choose "always allow": nostrclaw checks that a person is deciding. Then call signer_status.',
+        'Tell them to approve each signing request when asked and NOT to choose "always allow": nostrclaw checks that a person is deciding. ' +
+        'They must KEEP THE SIGNER APP OPEN ON SCREEN for about 30 seconds after approving (phone apps are suspended in the background and then do not answer). Then call signer_status.',
     }
   }))
 

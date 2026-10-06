@@ -19,6 +19,8 @@ export type SignerState = 'disconnected' | 'connecting' | 'connected'
 interface Saved { clientSecret: string; signerPubkey?: string; relays?: string[] }
 
 const CONNECT_WINDOW_MS = 120_000
+/** After the handshake the signer must tell us which key it signs as. Signer apps on a phone are often suspended in the background, so this waits longer. */
+const IDENTITY_WAIT_MS = 75_000
 
 const asError = (e: unknown): Error => (e instanceof Error ? e : new Error(typeof e === 'string' ? e : JSON.stringify(e)))
 
@@ -31,6 +33,8 @@ function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
 
 export class SignerManager {
   state: SignerState = 'disconnected'
+  /** What a 'connecting' state is waiting for (shown in the status). */
+  phase?: 'waiting-for-approval' | 'waiting-for-the-signer-to-answer'
   userPubkey?: string
   signerPubkey?: string
   relays: string[] = []
@@ -78,9 +82,11 @@ export class SignerManager {
     this.signer = signer
     this.signerPubkey = signer.bp.pubkey
     this.relays = signer.bp.relays
-    this.userPubkey = await withTimeout(signer.getPublicKey(), 30_000, 'the signer (get_public_key)')
+    this.phase = 'waiting-for-the-signer-to-answer'
+    this.userPubkey = await withTimeout(signer.getPublicKey(), this.cfg.signing.identityWaitMs ?? IDENTITY_WAIT_MS, 'the signer (which key it signs as). Keep the signer app open on screen while connecting; phone apps are suspended in the background')
     this.save({ clientSecret: clientSecretHex, signerPubkey: this.signerPubkey, relays: this.relays })
     this.state = 'connected'
+    this.phase = undefined
     this.lastError = undefined
     this.autoApprovalSuspected = false
     this.pending = undefined
@@ -88,6 +94,7 @@ export class SignerManager {
 
   private failed(e: unknown): void {
     this.state = 'disconnected'
+    this.phase = undefined
     this.lastError = cleanText(asError(e).message, 300)
     this.pending = undefined
   }
@@ -117,6 +124,7 @@ export class SignerManager {
       clientPubkey: getPublicKey(sk), relays: this.cfg.signing.signerRelays, secret: randomBytes(16).toString('hex'), perms, name: 'nostrclaw',
     })
     this.state = 'connecting'
+    this.phase = 'waiting-for-approval'
     this.lastError = undefined
     this.pending = { uri, until: this.now() + CONNECT_WINDOW_MS }
     void (async () => {

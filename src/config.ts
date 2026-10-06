@@ -35,6 +35,8 @@ export interface SigningConfig {
   signerRelays: string[]
   configDir: string
   stateDir: string
+  /** How long to wait for the signer to say which key it signs as, after the handshake (tests shorten it). */
+  identityWaitMs?: number
 }
 
 function signerRelays(env: Record<string, string | undefined>, relays: string[]): string[] {
