@@ -3,9 +3,10 @@
 // nothing the model sees can be replayed to publish the event by other means.
 import { createHash, randomBytes } from 'node:crypto'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
-import { nip19, verifyEvent, type VerifiedEvent } from 'nostr-tools'
+import { nip19, verifyEvent, type Event, type VerifiedEvent } from 'nostr-tools'
 import { z } from 'zod'
 import { kindName } from '../analysis.js'
+import { hashtagTags, isReactionContent, mentionTags, mergeTags, reactionTags, replyTags } from '../compose.js'
 import type { Config } from '../config.js'
 import type { NostrApi } from '../nostr/client.js'
 import { cleanText, resolveRelay } from '../safety.js'
@@ -24,6 +25,8 @@ interface Draft {
   template: { kind: number; content: string; tags: string[][]; created_at: number }
   hash: string
   expires: number
+  /** What the event answers (the cleaned start of the original note and its author), shown to the user when they are asked to confirm. */
+  context?: string
 }
 
 const DRAFT_TTL = 600
@@ -104,21 +107,78 @@ export function registerSigningTools(server: McpServer, cfg: Config, api: NostrA
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   }, guard(async (a: { kind: number; content: string; tags: string[][] }) => {
+    // in a note, #hashtags and nostr:npub… mentions become tags (the user sees them in the draft); other kinds are left exactly as given
+    const tags = a.kind === 1 ? mergeTags(a.tags, [...hashtagTags(a.content), ...mentionTags(a.content)]) : a.tags
+    return createDraft({ kind: a.kind, content: a.content, tags })
+  }))
+
+  /** Checks a template against the policy, stores it as a draft and returns what the user needs to see. */
+  function createDraft(t: { kind: number; content: string; tags: string[][] }, context?: string, extra: Record<string, unknown> = {}) {
     live()
-    const reason = checkDraft(policy, a)
-    if (reason) { audit.log({ step: 'refused', kind: a.kind, detail: reason.slice(0, 200) }); throw new Error(reason) }
-    const template = { kind: a.kind, content: a.content, tags: a.tags, created_at: clock() }
+    const reason = checkDraft(policy, t)
+    if (reason) { audit.log({ step: 'refused', kind: t.kind, detail: reason.slice(0, 200) }); throw new Error(reason) }
+    const template = { kind: t.kind, content: t.content, tags: t.tags, created_at: clock() }
     const id = `d_${randomBytes(4).toString('hex')}`
     const hash = sha(JSON.stringify([template.kind, template.content, template.tags]))
-    drafts.set(id, { id, template, hash, expires: clock() + DRAFT_TTL })
+    drafts.set(id, { id, template, hash, expires: clock() + DRAFT_TTL, context })
     while (drafts.size > MAX_DRAFTS) drafts.delete(drafts.keys().next().value!)
-    audit.log({ step: 'draft', draftId: id, kind: a.kind, contentHash: hash })
+    audit.log({ step: 'draft', draftId: id, kind: t.kind, contentHash: hash })
     return {
       draftId: id, expiresInMinutes: DRAFT_TTL / 60, contentHash: hash,
-      preview: { kind: a.kind, kindName: kindName(a.kind), content: a.content, tags: a.tags },
+      preview: { kind: t.kind, kindName: kindName(t.kind), content: t.content, tags: t.tags },
+      ...extra,
       willBePublishedTo: policy.publishRelays, willBeSignedAs: npub() ?? '(no signer connected yet: use signer_connect)',
       next: 'Show the user this draft. Call publish_event with the draftId only if they want it published; they will be asked to confirm, and must then approve in their signer app (ask them to have it open on screen).',
     }
+  }
+
+  /** Looks for an event on the configured relays (signature verified by the client). */
+  async function findEvent(raw: string): Promise<{ event: Event; foundOn: string[] }> {
+    let id = raw.trim().toLowerCase()
+    if (/^(note1|nevent1)/.test(id)) { try { const d = nip19.decode(id); id = d.type === 'note' ? d.data : d.type === 'nevent' ? d.data.id : '' } catch { id = '' } }
+    if (!/^[0-9a-f]{64}$/.test(id)) throw new Error('not a valid event id (use 64-character hex, note1… or nevent1…)')
+    const found: { event: Event; url: string }[] = []
+    await Promise.all(cfg.relays.map(async (r) => {
+      try {
+        const url = resolveRelay(r, cfg)
+        const res = await api.query(url, { ids: [id], limit: 1 }, { timeoutMs: cfg.timeoutMs, max: 1 })
+        const e = res.events.find((x) => x.id === id)
+        if (e) found.push({ event: e, url })
+      } catch { /* that relay did not answer: the others may have it */ }
+    }))
+    if (!found.length) throw new Error('that event was not found on the configured relays, so there is nothing to answer')
+    return { event: found[0]!.event, foundOn: found.map((f) => f.url) }
+  }
+  const excerptOf = (e: Event) => `${nip19.npubEncode(e.pubkey)}: "${cleanText(e.content, 200)}"`
+
+  server.registerTool('draft_reaction', {
+    title: 'Draft a reaction to an event',
+    description: 'Prepares an UNSIGNED reaction (kind 7, NIP-25) to an event on the configured relays: it fetches the event and builds the e, p and k tags (and a for addressable events) itself, so they cannot be wrong. Content: "+" (default), "-" or one emoji. Nothing is signed or published: it returns a draft id; publish_event asks the user to confirm.',
+    inputSchema: {
+      eventId: z.string().describe('The event to react to: 64-character hex, or note1… / nevent1….'),
+      content: z.string().max(24).default('+').describe('"+" (like, the default), "-" or a single emoji.'),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  }, guard(async (a: { eventId: string; content: string }) => {
+    if (!isReactionContent(a.content)) throw new Error('a reaction is "+", "-" or a single emoji')
+    const { event, foundOn } = await findEvent(a.eventId)
+    return createDraft({ kind: 7, content: a.content, tags: reactionTags(event) }, `Reacting to ${excerptOf(event)}`,
+      { target: { id: event.id, author: nip19.npubEncode(event.pubkey), kind: event.kind, foundOn }, untrusted: { targetExcerpt: cleanText(event.content, 200) } })
+  }))
+
+  server.registerTool('draft_reply', {
+    title: 'Draft a reply to a note',
+    description: 'Prepares an UNSIGNED reply (a note, kind 1) to a note on the configured relays: it fetches the note and builds the NIP-10 thread tags (root / reply markers) and the p tags itself, so the reply threads correctly and notifies the right people. #hashtags and nostr:npub… mentions in the text become tags too. Only replies to notes (kind 1) are supported. Nothing is signed or published: it returns a draft id; publish_event asks the user to confirm.',
+    inputSchema: {
+      eventId: z.string().describe('The note to reply to: 64-character hex, or note1… / nevent1….'),
+      content: z.string().min(1).max(20000).describe('The text of the reply.'),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  }, guard(async (a: { eventId: string; content: string }) => {
+    const { event, foundOn } = await findEvent(a.eventId)
+    const tags = mergeTags(replyTags(event), [...hashtagTags(a.content), ...mentionTags(a.content)])
+    return createDraft({ kind: 1, content: a.content, tags }, `Replying to ${excerptOf(event)}`,
+      { target: { id: event.id, author: nip19.npubEncode(event.pubkey), kind: event.kind, foundOn }, untrusted: { targetExcerpt: cleanText(event.content, 200) } })
   }))
 
   server.registerTool('publish_event', {
@@ -154,6 +214,7 @@ export function registerSigningTools(server: McpServer, cfg: Config, api: NostrA
       const asked = await server.server.elicitInput({
         message:
           `Publish this ${kindName(draft.template.kind)} (kind ${draft.template.kind}) as ${npub()}?\n\n"${cleanText(draft.template.content, 1000)}"\n\n` +
+          (draft.context ? `${draft.context}\n\n` : '') +
           `Tags: ${draft.template.tags.length ? cleanText(JSON.stringify(draft.template.tags), 300) : 'none'}\nTo: ${policy.publishRelays.join(', ')}\n\n` +
           'It is public and cannot really be undone.\n\nAFTER YOU ACCEPT, open your signer app (Clave) and keep it on screen: it will ask you to approve the signature, and nostrclaw waits ' + `${Math.round(policy.signTimeoutMs / 60000)} minutes for it.`,
         requestedSchema: { type: 'object', properties: { publish: { type: 'boolean', title: 'Yes, publish it', description: 'Sign it with my signer and publish it' } }, required: ['publish'] },

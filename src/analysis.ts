@@ -37,7 +37,7 @@ export function viewEvent(e: Event, now: number, maxContent: number): EventView 
     ageMinutes: Math.max(0, Math.round((now - e.created_at) / 60)),
     contentLength: [...e.content].length,
     content: cleanText(e.content, maxContent),
-    tags: e.tags.slice(0, 8).map((t) => t.slice(0, 3).map((v) => cleanText(v, 80))),
+    tags: e.tags.slice(0, 8).map((t) => t.slice(0, 4).map((v) => cleanText(v, 80))),
   }
 }
 

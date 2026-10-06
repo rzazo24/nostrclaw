@@ -7,7 +7,7 @@ import { nip19 } from 'nostr-tools'
 import { realApi } from '../src/nostr/client.js'
 import type { NostrApi } from '../src/nostr/client.js'
 import type { Config } from '../src/config.js'
-import { call, cfg, connect, type Elicit } from './helpers.js'
+import { call, cfg, connect, ev, key, type Elicit } from './helpers.js'
 import { FakeSigner, type Behaviour } from './fake-signer.js'
 import { relayBinary, startRelay, type TestRelay } from './relay-harness.js'
 
@@ -60,7 +60,7 @@ describe.skipIf(!bin)('signing (real relay + pretend NIP-46 signer)', () => {
     const off = await connect(cfg({ relays: [relay.url], allowPrivate: true }))
     closers.push(off.close)
     const names = (await off.client.listTools()).tools.map((t) => t.name)
-    expect(names).not.toContain('publish_event'); expect(names).not.toContain('signer_connect')
+    expect(names).not.toContain('publish_event'); expect(names).not.toContain('signer_connect'); expect(names).not.toContain('draft_reaction'); expect(names).not.toContain('draft_reply')
     const s = await setup({ connected: false })
     const on = (await s.client.listTools()).tools
     expect(on.map((t) => t.name)).toEqual(expect.arrayContaining(['signer_connect', 'signer_status', 'signer_disconnect', 'draft_event', 'publish_event']))
@@ -353,6 +353,68 @@ describe.skipIf(!bin)('signing (real relay + pretend NIP-46 signer)', () => {
     const id = (await call(s.client, 'publish_event', { draftId: d.json.draftId })).text.match(/eventId ([0-9a-f]{64})/)![1]!
     for (let i = 0; i < 3; i++) expect((await call(s.client, 'retry_publish', { eventId: id })).json.retriesLeft).toBe(2 - i)
     expect((await call(s.client, 'retry_publish', { eventId: id })).text).toMatch(/already retried 3 times/)
+  })
+
+  describe('reactions, replies and automatic tags', () => {
+    const NOW = () => Math.floor(Date.now() / 1000)
+    const eventsOf = async (s: Awaited<ReturnType<typeof setup>>, kind: number) =>
+      (await call(s.client, 'recent_events', { kinds: [kind], authors: [s.fake.userPk], limit: 5 })).json.untrusted.events as { content: string; tags: string[][] }[]
+
+    it('draft_reaction fetches the event and builds the NIP-25 tags; the confirmation question says what is being reacted to; the tags survive publishing', async () => {
+      const author = key(), target = ev(author, 1, 'a note worth liking', NOW() - 60)
+      await relay.publish([target])
+      const questions: string[] = []
+      const s = await setup({ elicit: (m) => { questions.push(m); return { action: 'accept', content: { publish: true } } } })
+      const d = await call(s.client, 'draft_reaction', { eventId: nip19.noteEncode(target.id), content: '🔥' })
+      expect(d.json.preview).toMatchObject({ kind: 7, content: '🔥', tags: [['e', target.id], ['p', author.pk], ['k', '1']] })
+      expect(d.json.target).toMatchObject({ id: target.id, author: nip19.npubEncode(author.pk), kind: 1 })
+      expect(d.json.untrusted.targetExcerpt).toBe('a note worth liking')
+      const r = await call(s.client, 'publish_event', { draftId: d.json.draftId })
+      expect(r.json.published).toBe(true)
+      expect(questions[0]).toMatch(/Reacting to npub1\w+: "a note worth liking"/)
+      expect((await eventsOf(s, 7))[0]).toMatchObject({ content: '🔥', tags: [['e', target.id], ['p', author.pk], ['k', '1']] })
+    })
+
+    it('draft_reaction refuses odd content and events that are not on the relays', async () => {
+      const s = await setup({ elicit: yes })
+      expect((await call(s.client, 'draft_reaction', { eventId: 'ab'.repeat(32) })).text).toMatch(/not found on the configured relays/)
+      const target = ev(key(), 1, 'x', NOW()); await relay.publish([target])
+      expect((await call(s.client, 'draft_reaction', { eventId: target.id, content: 'nice post' })).text).toMatch(/"\+", "-" or a single emoji/)
+      expect((await call(s.client, 'draft_reaction', { eventId: 'nope' })).text).toMatch(/not a valid event id/)
+    })
+
+    it('draft_reply threads correctly (root + reply markers, author first), adds #hashtags and nostr: mentions, and the question shows the original', async () => {
+      const [alice, bob, carol] = [key(), key(), key()]
+      const root = ev(alice, 1, 'the root note', NOW() - 120)
+      const mid = ev(bob, 1, 'a reply in the thread', NOW() - 60, [['e', root.id, '', 'root'], ['p', alice.pk]])
+      await relay.publish([root, mid])
+      const questions: string[] = []
+      const s = await setup({ elicit: (m) => { questions.push(m); return { action: 'accept', content: { publish: true } } } })
+      const text = `Agreed! #Nostr cc nostr:${nip19.npubEncode(carol.pk)}`
+      const d = await call(s.client, 'draft_reply', { eventId: mid.id, content: text })
+      expect(d.json.preview.tags).toEqual([['e', root.id, '', 'root'], ['e', mid.id, '', 'reply'], ['p', bob.pk], ['p', alice.pk], ['t', 'nostr'], ['p', carol.pk]])
+      expect((await call(s.client, 'publish_event', { draftId: d.json.draftId })).json.published).toBe(true)
+      expect(questions[0]).toMatch(/Replying to npub1\w+: "a reply in the thread"/)
+      expect((await eventsOf(s, 1))[0]!.tags).toEqual(d.json.preview.tags)
+    })
+
+    it('draft_reply to a root note carries only the root marker; replying to a non-note is refused with the reason', async () => {
+      const root = ev(key(), 1, 'a root', NOW() - 30), reaction = ev(key(), 7, '+', NOW() - 20, [['e', root.id]])
+      await relay.publish([root, reaction])
+      const s = await setup({ elicit: yes })
+      const d = await call(s.client, 'draft_reply', { eventId: root.id, content: 'hello' })
+      expect(d.json.preview.tags.filter((t: string[]) => t[0] === 'e')).toEqual([['e', root.id, '', 'root']])
+      expect((await call(s.client, 'draft_reply', { eventId: reaction.id, content: 'x' })).text).toMatch(/NIP-22/)
+    })
+
+    it('draft_event turns #hashtags and nostr: mentions of a note into tags, keeps the explicit ones, and leaves other kinds alone', async () => {
+      const s = await setup({ elicit: yes })
+      const other = key()
+      const d = await call(s.client, 'draft_event', { kind: 1, content: `Hello #nostr #MCP nostr:${nip19.npubEncode(other.pk)}`, tags: [['t', 'nostr'], ['client', 'x']] })
+      expect(d.json.preview.tags).toEqual([['t', 'nostr'], ['client', 'x'], ['t', 'mcp'], ['p', other.pk]])
+      const reaction = await call(s.client, 'draft_event', { kind: 7, content: '+', tags: [['e', 'ab'.repeat(32)], ['p', 'cd'.repeat(32)]] })
+      expect(reaction.json.preview.tags).toEqual([['e', 'ab'.repeat(32)], ['p', 'cd'.repeat(32)]])
+    })
   })
 
   it('a note from the network that tells the assistant to publish cannot make it publish: only the user\'s answer counts', async () => {
