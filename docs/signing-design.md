@@ -119,6 +119,9 @@ event id, kind, content hash, relays and result. No content, no secrets, no URIs
   then **tapping the notification when it arrived** got the answer 21 s after the first request. So the practical flow is "call signer_connect (or publish), tap
   Clave's blank notification, approve". The notification does not depend on the relay list: requests reach both relays, Clave answers only through
   `relay.powr.build`, and the second relay in the link does no harm. An earlier theory (that listing the user's relay hurt background signing) was wrong.
+  **Signing is different from resuming:** a signature request that reached Clave while it was in the background (the user on Termius on the same iPhone) showed up
+  in Clave as "pending" with nothing the user could do with it, and expired unsigned. Every signature that worked was made with Clave already open on screen.
+  So: resuming works with a tap on the notification; **sign with Clave in the foreground**, ideally with Claude Code on a computer and the phone used only for Clave.
   Not tested: whether a *medium trust* connection would answer `get_public_key` silently; it would also auto-approve kinds 1, 6 and 7, which is the unsafe choice.
 
 ## Known limitation
