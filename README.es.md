@@ -37,6 +37,10 @@ Después pídele a Claude cosas como *«Audita mi relé»*, *«¿De qué está h
 | `count_events` | `COUNT` de NIP-45 sin descargar nada, con un mensaje claro si no está soportado |
 | `activity_report` | Análisis de una muestra: recuento por tipo, eventos por hora, autores más activos, el mismo texto desde varias claves, ráfagas de una clave, porcentaje de autores con un solo evento y una lista corta de señales |
 | `author_report` | Una clave: perfil (kind 0), seguidos, lista de relés, actividad en este relé |
+| `account_triage` | Ordena los autores de una ventana según lo que parecen claves desechables o abusivas; cada punto de la puntuación lleva su motivo (sin perfil / seguidos / lista de relés en este relé, texto compartido con otras claves —también casi iguales—, ráfagas, solo enlaces). Ayuda de triaje, no veredicto |
+| `event_engagement` | Un evento: respuestas, reacciones, reposts y zaps (NIP-45 COUNT, o una muestra si el relé no puede), desglose de reacciones y personas distintas |
+
+`recent_events`, `count_events` y `activity_report` aceptan también un filtro `tags` (`{"e": [id]}`, `{"p": [pubkey]}`, `{"t": ["bitcoin"]}`).
 
 ## Publicar (opcional, NIP-46)
 

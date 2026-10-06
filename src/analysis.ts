@@ -2,6 +2,8 @@
 // Everything that comes from an event (content, names, tags) is cleaned before it leaves this module.
 import type { Event } from 'nostr-tools'
 import { cleanText } from './safety.js'
+import { burstOf } from './bursts.js'
+import { clusterTexts, repeated } from './text.js'
 
 export const KIND_NAMES: Record<number, string> = {
   0: 'profile', 1: 'note', 3: 'follow list', 4: 'direct message (legacy)', 5: 'deletion', 6: 'repost', 7: 'reaction', 13: 'seal', 14: 'direct message',
@@ -47,7 +49,7 @@ export interface ActivityReport {
   perHour: { hour: string; count: number }[]
   topAuthors: { pubkey: string; events: number; kinds: Record<string, number>; first: string; last: string }[]
   content: { empty: number; medianLength: number; withLinks: number }
-  repeatedText: { text: string; events: number; authors: number }[]
+  repeatedText: { text: string; events: number; authors: number; nearCopies: boolean }[]
   bursts: { pubkey: string; events: number; withinSeconds: number }[]
   authorsWithOneEvent: { count: number; percent: number }
   signals: Signal[]
@@ -79,31 +81,17 @@ export function buildReport(events: Event[], opts: { topN?: number; burstWindowS
   const textual = events.filter((e) => e.kind === 1 || e.kind === 30023 || e.kind === 42)
   const lengths = textual.map((e) => [...e.content].length)
 
-  // the same text from several keys (or many times from one) is the classic spam / bot signature
-  const texts = new Map<string, { events: number; authors: Set<string> }>()
-  for (const e of textual) {
-    const t = e.content.trim().toLowerCase()
-    if (!t) continue
-    const slot = texts.get(t) ?? { events: 0, authors: new Set<string>() }
-    slot.events++; slot.authors.add(e.pubkey)
-    texts.set(t, slot)
-  }
-  const repeatedText = [...texts.entries()]
-    .filter(([, v]) => v.authors.size >= 2 || v.events >= 3)
-    .map(([text, v]) => ({ text: cleanText(text, 80), events: v.events, authors: v.authors.size }))
+  // the same text (or a near-copy) from several keys, or many times from one: the classic spam / bot signature
+  const repeatedText = repeated(clusterTexts(textual))
+    .map((c) => ({ text: c.sample, events: c.events, authors: c.authors.size, nearCopies: c.near }))
     .sort((a, b) => b.authors - a.authors || b.events - a.events)
     .slice(0, topN)
 
   // many events from one key in a short window
   const bursts: ActivityReport['bursts'] = []
   for (const [pk, list] of byAuthor) {
-    const ts = list.map((e) => e.created_at).sort((a, b) => a - b)
-    let best = 0, bestSpan = 0
-    for (let i = 0, j = 0; i < ts.length; i++) {
-      while (ts[i]! - ts[j]! > window) j++
-      if (i - j + 1 > best) { best = i - j + 1; bestSpan = ts[i]! - ts[j]! }
-    }
-    if (best >= burstMin) bursts.push({ pubkey: pk, events: best, withinSeconds: bestSpan })
+    const b = burstOf(list.map((e) => e.created_at), window)
+    if (b.events >= burstMin) bursts.push({ pubkey: pk, events: b.events, withinSeconds: b.seconds })
   }
   bursts.sort((a, b) => b.events - a.events)
 

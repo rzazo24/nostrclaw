@@ -32,7 +32,7 @@ describe('tool catalogue', () => {
   it('exposes the expected tools, every one marked read-only and none able to write', async () => {
     const { client } = await setup()
     const { tools } = await client.listTools()
-    expect(tools.map((t) => t.name).sort()).toEqual(['activity_report', 'author_report', 'count_events', 'nostrclaw_status', 'recent_events', 'relay_overview'])
+    expect(tools.map((t) => t.name).sort()).toEqual(['account_triage', 'activity_report', 'author_report', 'count_events', 'event_engagement', 'nostrclaw_status', 'recent_events', 'relay_overview'])
     for (const t of tools) {
       expect(t.annotations?.readOnlyHint, t.name).toBe(true)
       expect(t.annotations?.destructiveHint, t.name).toBe(false)
@@ -150,7 +150,7 @@ describe('activity_report', () => {
   it('analyses the sample, flags repeated text across keys and bursts, and flags truncation', async () => {
     const events = [
       ...Array.from({ length: 5 }, (_, i) => ev(key(), 1, 'Azul', NOW - i)),
-      ...Array.from({ length: 8 }, (_, i) => ev(key(), 1, `unique ${i}`, NOW - 100 - i)),
+      ...['good morning everyone', 'the relay feels fast today', 'anyone tried the new client?', 'coffee first, nostr second', 'reading about NIP-46 tonight', 'sunny weekend ahead', 'new here, hello', 'what a lovely sunset'].map((t, i) => ev(key(), 1, t, NOW - 100 - i)),
     ]
     const burster = key()
     for (let i = 0; i < 9; i++) events.push(ev(burster, 1, `b${i}`, NOW - 200 - i))
@@ -160,7 +160,7 @@ describe('activity_report', () => {
     expect(r.json.sample.events).toBe(22)
     expect(r.json.sampleIsTruncated).toBe(true) // we got exactly the limit
     expect(r.json.truncationNote).toMatch(/probably more/)
-    expect(r.json.untrusted.repeatedText[0]).toMatchObject({ text: 'azul', authors: 5 })
+    expect(r.json.untrusted.repeatedText[0]).toMatchObject({ text: 'Azul', authors: 5 })
     expect(r.json.signals.some((s: { kind: string }) => s.kind === 'duplicate-text')).toBe(true)
     expect(r.json.signals.some((s: { kind: string }) => s.kind === 'burst')).toBe(true)
     expect(JSON.stringify(r.json.signals).toLowerCase()).not.toContain('azul')
@@ -201,5 +201,91 @@ describe('author_report', () => {
     const { client } = await setup()
     const r = await call(client, 'author_report', { pubkey: 'npub1notvalid' })
     expect(r.isError).toBe(true); expect(r.text).toMatch(/valid public key/)
+  })
+})
+
+describe('tag filters', () => {
+  it('turns "tags" into #e/#p/#t relay filters on the three read tools, lower-casing hex', async () => {
+    const { client, queries } = await setup()
+    const id = 'AB'.repeat(32)
+    await call(client, 'recent_events', { tags: { e: [id], t: ['bitcoin'] }, limit: 5 })
+    expect(queries[0]!.filter).toMatchObject({ '#e': [id.toLowerCase()], '#t': ['bitcoin'], limit: 5 })
+    await call(client, 'activity_report', { tags: { p: ['c'.repeat(64)] }, hours: 1, sampleLimit: 10 })
+    expect(queries[1]!.filter).toMatchObject({ '#p': ['c'.repeat(64)] })
+  })
+  it('refuses odd tag filters with a clear message, before touching the network', async () => {
+    const { client, queries } = await setup()
+    expect((await call(client, 'recent_events', { tags: { emoji: ['x'] } })).text).toMatch(/single-letter/)
+    expect((await call(client, 'recent_events', { tags: { e: ['not-hex'] } })).text).toMatch(/64 hexadecimal/)
+    expect((await call(client, 'recent_events', { tags: { a: ['1'], b: ['1'], c: ['1'], d: ['1'], f: ['1'] } })).text).toMatch(/at most 4/)
+    expect(queries).toHaveLength(0)
+  })
+})
+
+describe('account_triage', () => {
+  it('ranks the odd authors first, explains the score, looks up profiles only for candidates and keeps names under "untrusted"', async () => {
+    const spammer = key(), friend = key()
+    const events = [
+      ...Array.from({ length: 6 }, (_, i) => ev(spammer, 1, `Free sats https://x.example/${i}`, NOW - i * 2)),
+      ...Array.from({ length: 4 }, (_, i) => ev(key(), 1, `Free sats https://y.example/${i}`, NOW - 50 - i)),
+      ev(friend, 1, 'a quiet thought about relays and mornings', NOW - 400),
+    ]
+    const profiles = [ev(friend, 0, JSON.stringify({ name: 'Frida', nip05: 'f@example.com' }), NOW - 9000), ev(friend, 3, '', NOW - 9000, Array.from({ length: 30 }, (_, i) => ['p', String(i).padStart(64, '0')])), ev(friend, 10002, '', NOW - 9000, [['r', 'wss://relay.example.com']])]
+    const lookups: unknown[] = []
+    const { client } = await setup({
+      async query(_r, f, o) {
+        const kinds = (f as { kinds?: number[] }).kinds
+        if (kinds?.includes(0)) { lookups.push(f); return { events: profiles.filter((p) => (f as { authors: string[] }).authors.includes(p.pubkey)), eose: true, notices: [], invalid: 0, ms: 1 } }
+        return { events: events.slice(0, o.max), eose: true, notices: [], invalid: 0, ms: 1 }
+      },
+    })
+    const r = await call(client, 'account_triage', { hours: 6, sampleLimit: 100, top: 10 })
+    expect(r.json.authors[0]).toMatchObject({ pubkey: spammer.pk, level: 'high' })
+    expect(r.json.authors[0].reasons.join(' ')).toMatch(/no profile.*also posted by other keys.*within.*link/)
+    const f = r.json.authors.find((a: { pubkey: string }) => a.pubkey === friend.pk)
+    expect(f).toMatchObject({ level: 'low', score: 0, onThisRelay: { profile: true, nip05Field: true, follows: 30, relayList: true } })
+    expect(r.json.untrusted.profileNames[friend.pk]).toBe('Frida')
+    expect(JSON.stringify({ ...r.json, untrusted: undefined })).not.toContain('Frida') // names never outside "untrusted"
+    expect(r.json.scoringWeights.noProfile).toBe(25)
+    expect(r.json.caveats).toMatch(/THIS relay/)
+    expect(lookups.length).toBeGreaterThan(0)
+  })
+})
+
+describe('event_engagement', () => {
+  const id = 'ab'.repeat(32)
+  it('counts replies, reactions, reposts and zaps with COUNT and breaks the reactions down', async () => {
+    const author = key(), fan = key(), other = key()
+    const target = ev(author, 1, 'a note people liked', NOW - 100)
+    const reactions = [ev(fan, 7, '+', NOW - 90), ev(other, 7, '+', NOW - 80), ev(author, 7, '❤️', NOW - 70), ev(fan, 7, '🔥', NOW - 60)]
+    const counted: unknown[] = []
+    const { client } = await setup({
+      async query(_r, f) { const x = f as { ids?: string[]; kinds?: number[] }; return { events: x.ids ? [target] : x.kinds?.includes(7) ? reactions : [], eose: true, notices: [], invalid: 0, ms: 1 } },
+      async count(_r, f) { counted.push(f); const k = (f as { kinds: number[] }).kinds[0]!; return { count: { 1: 3, 7: 4, 6: 2, 9735: 1 }[k] ?? 0, ms: 1 } },
+    })
+    const r = await call(client, 'event_engagement', { id: target.id })
+    expect(r.json).toMatchObject({ foundOnThisRelay: true, counts: { replies: 3, reactions: 4, reposts: 2, zaps: 1 }, countedBy: 'NIP-45 COUNT' })
+    expect(r.json.reactions).toMatchObject({ distinctPeople: 3, reactedToOwnEvent: true })
+    expect(r.json.reactions.byContent[0]).toEqual({ content: '+', n: 2 })
+    expect(r.json.untrusted.event.content).toBe('a note people liked')
+    expect(counted).toHaveLength(4)
+    expect(counted[0]).toMatchObject({ kinds: [1], '#e': [target.id] })
+  })
+  it('falls back to counting a sample when the relay cannot COUNT, and accepts note1 ids', async () => {
+    const author = key(), a = key()
+    const target = ev(author, 1, 'hello', NOW - 10)
+    const referencing = [ev(a, 7, '+', NOW - 5), ev(a, 1, 'a reply', NOW - 4), ev(key(), 6, '', NOW - 3)]
+    const { client } = await setup({
+      async query(_r, f) { const x = f as { ids?: string[] }; return { events: x.ids ? [target] : referencing, eose: true, notices: [], invalid: 0, ms: 1 } },
+      async count() { return { count: null, reason: 'unsupported', ms: 1 } },
+    })
+    const r = await call(client, 'event_engagement', { id: nip19.noteEncode(target.id) })
+    expect(r.json.counts).toEqual({ replies: 1, reactions: 1, reposts: 1, zaps: 0 })
+    expect(r.json.countedBy).toMatch(/does not answer COUNT/)
+  })
+  it('says when the event is not on this relay, and rejects bad ids', async () => {
+    const { client } = await setup({ async query() { return { events: [], eose: true, notices: [], invalid: 0, ms: 1 } } })
+    expect((await call(client, 'event_engagement', { id })).json.foundOnThisRelay).toBe(false)
+    expect((await call(client, 'event_engagement', { id: 'nope' })).text).toMatch(/not a valid event id/)
   })
 })

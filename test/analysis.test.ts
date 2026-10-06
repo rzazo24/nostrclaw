@@ -46,7 +46,7 @@ describe('buildReport', () => {
     const keys = [key(), key(), key(), key()]
     const events = keys.map((k, i) => ev(k, 1, 'Azul', NOW - i)).concat([ev(key(), 1, 'something else', NOW)])
     const r = buildReport(events)
-    expect(r.repeatedText[0]).toMatchObject({ text: 'azul', events: 4, authors: 4 })
+    expect(r.repeatedText[0]).toMatchObject({ text: 'Azul', events: 4, authors: 4 })
     const s = r.signals.find((x) => x.kind === 'duplicate-text')!
     expect(s.detail).toMatch(/4 events from 4 different key/)
     expect(s.detail.toLowerCase()).not.toContain('azul') // third-party text stays out of signals
