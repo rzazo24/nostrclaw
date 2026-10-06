@@ -106,6 +106,20 @@ Un asistente que lee una red pública se expone a texto escrito por desconocidos
 | `NOSTRCLAW_CONFIG_DIR` | `~/.config/nostrclaw` | `policy.json` y la sesión guardada del firmador |
 | `NOSTRCLAW_STATE_DIR` | `~/.local/state/nostrclaw` | `audit.jsonl` |
 
+## Si algo falla: `nostrclaw doctor`
+
+Si algo no funciona, lanza el doctor. Es de solo lectura (nunca firma, publica ni escribe) y nunca imprime secretos:
+
+```bash
+node dist/index.js doctor --claude nostrclaw-sign      # la configuración que Claude Code lanza de verdad, leída de ~/.claude.json
+node dist/index.js doctor --claude nostrclaw-sign --check-signer   # además reanuda la sesión y hace ping a Clave (ábrela antes en pantalla)
+node dist/index.js doctor --json                        # legible por máquinas; código de salida 1 si hay un problema
+```
+
+Comprueba la versión de Node, la configuración, cada relé (dirección permitida, NIP-11, una consulta real, límites de autenticación o pago), `policy.json`, la sesión
+guardada del firmador (permisos, daños, si usa `relay.powr.build`), el registro de auditoría y, con `--check-signer`, que el firmador contesta. Cada hallazgo dice
+qué está mal y cómo arreglarlo. Sin `--claude` lee los `NOSTRCLAW_*` del entorno de la shell.
+
 ## Desarrollo
 
 ```bash

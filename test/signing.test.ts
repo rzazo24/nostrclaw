@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { nip19 } from 'nostr-tools'
+import { runDoctor, type Check } from '../src/doctor.js'
 import { realApi } from '../src/nostr/client.js'
 import type { NostrApi } from '../src/nostr/client.js'
 import type { Config } from '../src/config.js'
@@ -415,6 +416,28 @@ describe.skipIf(!bin)('signing (real relay + pretend NIP-46 signer)', () => {
       const reaction = await call(s.client, 'draft_event', { kind: 7, content: '+', tags: [['e', 'ab'.repeat(32)], ['p', 'cd'.repeat(32)]] })
       expect(reaction.json.preview.tags).toEqual([['e', 'ab'.repeat(32)], ['p', 'cd'.repeat(32)]])
     })
+  })
+
+  it('doctor --check-signer resumes the saved session and pings the signer without signing anything, and says what it finds', async () => {
+    const s = await setup({ elicit: yes })
+    const env = { NOSTRCLAW_RELAYS: relay.url, NOSTRCLAW_ALLOW_PRIVATE: '1', NOSTRCLAW_ENABLE_SIGNING: '1', NOSTRCLAW_CONFIG_DIR: s.config, NOSTRCLAW_STATE_DIR: s.state }
+    const find = (checks: Check[], re: RegExp) => checks.find((c) => re.test(c.title))
+    const signedBefore = s.fake.signRequests
+
+    const good = await runDoctor(env, { checkSigner: true, resumeWaitMs: 3000, pingWaitMs: 1500 })
+    expect(find(good.checks, /The signer answered/)).toMatchObject({ level: 'ok', detail: expect.stringMatching(/ping \d+ ms, signing as npub1/) })
+    expect(s.fake.signRequests).toBe(signedBefore) // it never asked for a signature
+    expect(fs.existsSync(path.join(s.config, 'signer.json'))).toBe(true) // and the saved session is still there
+
+    s.fake.behaviour.silentToPing = true // awake enough to give its identity, asleep for the ping
+    const drowsy = await runDoctor(env, { checkSigner: true, resumeWaitMs: 3000, pingWaitMs: 500 })
+    expect(find(drowsy.checks, /resumed but did not answer a ping/)?.level).toBe('warn')
+
+    s.fake.behaviour.silentToPing = false; s.fake.behaviour.silentAboutIdentity = true // suspended in the background
+    const asleep = await runDoctor(env, { checkSigner: true, resumeWaitMs: 1200, pingWaitMs: 500 })
+    expect(find(asleep.checks, /The signer did not answer/)).toMatchObject({ level: 'fail', fix: expect.stringMatching(/open Clave on screen.*saved session is intact/) })
+    expect(asleep.summary.fail).toBe(1)
+    expect(fs.existsSync(path.join(s.config, 'signer.json'))).toBe(true)
   })
 
   it('a note from the network that tells the assistant to publish cannot make it publish: only the user\'s answer counts', async () => {

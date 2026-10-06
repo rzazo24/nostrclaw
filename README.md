@@ -106,6 +106,20 @@ An assistant reading a public network is exposed to text written by strangers, s
 | `NOSTRCLAW_CONFIG_DIR` | `~/.config/nostrclaw` | `policy.json` and the saved signer session |
 | `NOSTRCLAW_STATE_DIR` | `~/.local/state/nostrclaw` | `audit.jsonl` |
 
+## Troubleshooting: `nostrclaw doctor`
+
+If something does not work, run the doctor. It is read-only (it never signs, publishes or writes) and it never prints secrets:
+
+```bash
+node dist/index.js doctor --claude nostrclaw-sign      # the settings Claude Code really launches, read from ~/.claude.json
+node dist/index.js doctor --claude nostrclaw-sign --check-signer   # also resume the session and ping Clave (open it on screen first)
+node dist/index.js doctor --json                        # machine-readable; exit code 1 when there is a problem
+```
+
+It checks the Node version, the configuration, each relay (allowed address, NIP-11, a real query, authentication or payment limits), `policy.json`, the saved
+signer session (permissions, damage, whether it uses `relay.powr.build`), the audit log, and — with `--check-signer` — that the signer answers. Every finding says
+what is wrong and how to fix it. Without `--claude` it reads `NOSTRCLAW_*` from the shell's environment.
+
 ## Development
 
 ```bash
