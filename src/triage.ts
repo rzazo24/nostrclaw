@@ -3,7 +3,7 @@
 import type { Event } from 'nostr-tools'
 import { kindName } from './analysis.js'
 import { burstOf } from './bursts.js'
-import { clusterTexts } from './text.js'
+import { clusterTexts, isDistinctive } from './text.js'
 
 /** What the relay holds about an author besides the sample (profile, follow list, relay list). */
 export interface AuthorFacts {
@@ -41,7 +41,12 @@ export const WEIGHTS = {
 const iso = (unix: number) => new Date(unix * 1000).toISOString()
 const LINK = /https?:\/\/|www\./i
 
-export const levelOf = (score: number): Level => (score >= 60 ? 'high' : score >= 30 ? 'medium' : 'low')
+/** "High" needs at least two behaviour signals (a single weak one, e.g. a shared text, tops out at "medium"); missing data alone is always "low". */
+export function levelOf(score: number, behaviour = score): Level {
+  if (behaviour <= 0) return 'low'
+  if (behaviour >= 40 && score >= 60) return 'high'
+  return score >= 30 ? 'medium' : 'low'
+}
 
 export interface TriageInput {
   events: Event[]
@@ -68,7 +73,7 @@ export function triage({ events, facts }: TriageInput, top = 15): TriageResult {
   // events whose text is shared with another key (exact or near-copy)
   const textual = events.filter((e) => e.kind === 1 || e.kind === 30023 || e.kind === 42)
   const sharedIds = new Set<string>()
-  for (const c of clusterTexts(textual)) if (c.authors.size >= 2) for (const id of c.eventIds) sharedIds.add(id)
+  for (const c of clusterTexts(textual)) if (c.authors.size >= 2 && isDistinctive(c)) for (const id of c.eventIds) sharedIds.add(id)
 
   const authors: AuthorTriage[] = []
   for (const [pubkey, f] of facts) {
@@ -96,7 +101,7 @@ export function triage({ events, facts }: TriageInput, top = 15): TriageResult {
     for (const e of list) kinds[`${e.kind} ${kindName(e.kind)}`] = (kinds[`${e.kind} ${kindName(e.kind)}`] ?? 0) + 1
     const t = list.map((e) => e.created_at)
     // missing data is not evidence by itself: on a relay full of throw-away keys everyone lacks a profile, so without a behaviour signal the level stays low
-    const level = behaviour > 0 ? levelOf(score) : 'low'
+    const level = levelOf(score, behaviour)
     authors.push({ pubkey, score, level, behaviour, reasons, events: list.length, kinds, first: iso(Math.min(...t)), last: iso(Math.max(...t)), facts: f })
   }
   const flagged = authors.filter((a) => a.behaviour > 0).sort((a, b) => b.score - a.score || b.events - a.events)
@@ -120,7 +125,7 @@ export function pickCandidates(events: Event[], max: number): string[] {
   for (const e of events) byAuthor.set(e.pubkey, [...(byAuthor.get(e.pubkey) ?? []), e])
   const textual = events.filter((e) => e.kind === 1 || e.kind === 30023 || e.kind === 42)
   const shared = new Set<string>()
-  for (const c of clusterTexts(textual)) if (c.authors.size >= 2) for (const id of c.eventIds) shared.add(id)
+  for (const c of clusterTexts(textual)) if (c.authors.size >= 2 && isDistinctive(c)) for (const id of c.eventIds) shared.add(id)
   const pre = [...byAuthor.entries()].map(([pk, list]) => {
     let s = 0
     if (list.some((e) => shared.has(e.id))) s += 40

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { clusterTexts, normalizeText, repeated } from '../src/text.js'
+import { clusterTexts, isDistinctive, normalizeText, repeated } from '../src/text.js'
 import { ev, key } from './helpers.js'
 
 const NOW = 1_800_000_000
@@ -33,6 +33,10 @@ describe('clusterTexts', () => {
     expect(near).toHaveLength(1); expect(near[0]!.near).toBe(true)
     expect(clusterTexts([post(a, 'gm'), post(b, 'gn')])).toHaveLength(2)
     expect(clusterTexts([post(a, 'the weather is nice today'), post(b, 'my cat sleeps all day long')])).toHaveLength(2)
+  })
+  it('isDistinctive: greetings are not, three words or a link are', () => {
+    const d = (t: string) => isDistinctive(clusterTexts([post(key(), t)])[0]!)
+    expect([d('Azul'), d('good morning'), d('good morning all'), d('see https://x.example')]).toEqual([false, false, true, true])
   })
   it('ignores empty and punctuation-only texts', () => {
     expect(clusterTexts([post(key(), ''), post(key(), '!!!'), post(key(), '🔥🔥')])).toEqual([])

@@ -56,7 +56,24 @@ describe('triage', () => {
     expect(JSON.stringify(r.authors.map((x) => x.reasons)).toLowerCase()).not.toContain('secret-phrase')
   })
 
-  it('levelOf thresholds', () => { expect([0, 29, 30, 59, 60, 100].map(levelOf)).toEqual(['low', 'low', 'medium', 'medium', 'high', 'high']) })
+  it('levelOf: high needs two behaviour signals; one weak signal tops out at medium; missing data alone is low', () => {
+    expect([0, 29, 30, 59, 60, 100].map((s) => levelOf(s))).toEqual(['low', 'low', 'medium', 'medium', 'high', 'high'])
+    expect(levelOf(75, 25)).toBe('medium'); expect(levelOf(75, 40)).toBe('high'); expect(levelOf(50, 0)).toBe('low')
+  })
+
+  it('a short greeting posted by several keys is not copying (seen in production: "Azul" from four unrelated keys)', () => {
+    const keys = Array.from({ length: 4 }, () => key())
+    const events = keys.map((k, i) => ev(k, 1, 'Azul', NOW - i * 3600))
+    const r = triage({ events, facts: new Map(keys.map((k) => [k.pk, NO_FACTS])) })
+    expect(r.authors).toEqual([]); expect(r.quiet.count).toBe(4)
+    expect(pickCandidates(events, 4)).toHaveLength(4) // still looked up, just not flagged
+  })
+
+  it('a single weak signal plus missing data is medium, never high', () => {
+    const a = key(), b = key()
+    const r = triage({ events: [ev(a, 1, 'free coins at my site today', NOW), ev(b, 1, 'free coins at my site today', NOW - 1)], facts: new Map([[a.pk, NO_FACTS], [b.pk, NO_FACTS]]) })
+    expect(r.authors.map((x) => x.level)).toEqual(['medium', 'medium'])
+  })
 })
 
 describe('pickCandidates', () => {

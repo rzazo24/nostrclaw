@@ -74,5 +74,8 @@ export function clusterTexts(events: Event[], opts: ClusterOptions = {}): TextCl
   return clusters.map(({ tokens: _t, ...c }) => c)
 }
 
+/** A text worth calling "copied" when several keys post it: a short greeting ("Azul", "gm") is not; three or more words, or a link, is. */
+export const isDistinctive = (c: TextCluster): boolean => c.key.split(' ').length >= 3 || c.key.includes('<url>')
+
 /** Clusters that look like copying: the same text from at least two keys, or at least three times from one. */
 export const repeated = (clusters: TextCluster[]): TextCluster[] => clusters.filter((c) => c.authors.size >= 2 || c.events >= 3)
