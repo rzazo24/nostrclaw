@@ -1,5 +1,8 @@
 // Against the real relay (skipped when no relay binary is available: set RELAY_BIN). Covers the network code that the fake API skips:
 // the WebSocket queries, NIP-45 COUNT, NIP-11, the relay's /stats.json, signature checking, and the stdio transport end to end.
+import { spawn } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
@@ -93,6 +96,38 @@ describe.skipIf(!bin)('against the real relay', () => {
     await close()
   })
 
+  it('with signing enabled over stdio: the signing tools appear and the server says so', async () => {
+    const entry = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../dist/index.js')
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nc-stdio-'))
+    const transport = new StdioClientTransport({
+      command: process.execPath, args: [entry],
+      env: { ...(process.env as Record<string, string>), NOSTRCLAW_RELAYS: relay.url, NOSTRCLAW_ALLOW_PRIVATE: '1', NOSTRCLAW_ENABLE_SIGNING: '1', NOSTRCLAW_CONFIG_DIR: dir, NOSTRCLAW_STATE_DIR: dir },
+      stderr: 'pipe',
+    })
+    const client = new Client({ name: 'stdio-signing', version: '0' })
+    let stderr = ''
+    transport.stderr?.on('data', (d) => { stderr += d })
+    await client.connect(transport)
+    expect((await client.listTools()).tools.map((t) => t.name)).toEqual(expect.arrayContaining(['signer_connect', 'draft_event', 'publish_event']))
+    const st = await client.callTool({ name: 'signer_status', arguments: {} })
+    expect(JSON.parse((st.content as { text: string }[])[0]!.text)).toMatchObject({ state: 'disconnected', policy: { allowedKinds: [1, 7], maxEventsPerHour: 5 } })
+    await client.close()
+    expect(stderr).toMatch(/signing ENABLED/)
+  })
+
+  it('fails closed: an invalid policy.json stops the server instead of starting with something looser', async () => {
+    const entry = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../dist/index.js')
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nc-badpolicy-'))
+    fs.writeFileSync(path.join(dir, 'policy.json'), JSON.stringify({ allowedKinds: 'everything' }))
+    const child = spawn(process.execPath, [entry], { env: { ...process.env, NOSTRCLAW_RELAYS: relay.url, NOSTRCLAW_ALLOW_PRIVATE: '1', NOSTRCLAW_ENABLE_SIGNING: '1', NOSTRCLAW_CONFIG_DIR: dir, NOSTRCLAW_STATE_DIR: dir }, stdio: ['pipe', 'pipe', 'pipe'] })
+    let stderr = '', stdout = ''
+    child.stderr.on('data', (d) => { stderr += d }); child.stdout.on('data', (d) => { stdout += d })
+    const code = await new Promise<number | null>((resolve) => child.on('exit', resolve))
+    expect(code).not.toBe(0)
+    expect(stderr).toMatch(/policy\.json.*allowedKinds/)
+    expect(stdout).toBe('')
+  })
+
   it('works as a real stdio MCP server: only protocol on stdout, tools usable', async () => {
     const entry = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../dist/index.js')
     const transport = new StdioClientTransport({
@@ -110,6 +145,6 @@ describe.skipIf(!bin)('against the real relay', () => {
     expect(r.isError).toBeFalsy()
     expect(JSON.parse((r.content as { text: string }[])[0]!.text).returned).toBe(1)
     await client.close()
-    expect(stderr).toMatch(/nostrclaw 0\.1\.0 ready \(read-only\)/)
+    expect(stderr).toMatch(/nostrclaw 0\.2\.0 ready \(read-only\)/)
   })
 })

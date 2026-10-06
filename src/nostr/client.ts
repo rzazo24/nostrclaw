@@ -16,6 +16,8 @@ export interface QueryResult {
 
 export interface CountResult { count: number | null; reason?: string; ms: number }
 
+export interface PublishResult { ok: boolean; reason: string; ms: number }
+
 export interface Nip11Result { doc: Record<string, unknown>; ms: number }
 
 /** What the tools need from the network. Tests can pass a fake one. */
@@ -23,6 +25,8 @@ export interface NostrApi {
   query(relay: string, filter: Filter, o: { timeoutMs: number; max: number }): Promise<QueryResult>
   count(relay: string, filter: Filter, o: { timeoutMs: number }): Promise<CountResult>
   nip11(relay: string, o: { timeoutMs: number }): Promise<Nip11Result>
+  /** Sends one signed event and waits for the relay's OK. Only the signing tools use it. */
+  publish(relay: string, event: Event, o: { timeoutMs: number }): Promise<PublishResult>
   /** The relay's own public statistics document, if it publishes one (nostr-relay-khatru does, at /stats.json). */
   publicStats(relay: string, o: { timeoutMs: number }): Promise<Record<string, unknown> | null>
 }
@@ -127,6 +131,18 @@ export const realApi: NostrApi = {
       })
       ws.send(JSON.stringify(['COUNT', id, filter]))
     }, () => ({ count: null, reason: 'no answer (the relay may not support NIP-45 COUNT)', ms: Date.now() - t0 }))
+  },
+
+  publish(relay, event, { timeoutMs }) {
+    const t0 = Date.now()
+    return withSocket<PublishResult>(relay, timeoutMs, (ws, done) => {
+      ws.on('message', (raw) => {
+        let msg: unknown[]
+        try { msg = JSON.parse(String(raw)) } catch { return }
+        if (Array.isArray(msg) && msg[0] === 'OK' && msg[1] === event.id) done({ ok: msg[2] === true, reason: String(msg[3] ?? ''), ms: Date.now() - t0 })
+      })
+      ws.send(JSON.stringify(['EVENT', event]))
+    }, () => ({ ok: false, reason: 'no answer from the relay', ms: Date.now() - t0 }))
   },
 
   nip11: (relay, { timeoutMs }) => getJson(httpUrl(relay), 'application/nostr+json', timeoutMs),

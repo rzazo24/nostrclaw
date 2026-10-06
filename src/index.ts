@@ -9,7 +9,7 @@ async function main(): Promise<void> {
   const cfg = loadConfig()
   const server = createServer(cfg)
   await server.connect(new StdioServerTransport())
-  console.error(`nostrclaw ${VERSION} ready (read-only) — relays: ${cfg.relays.join(', ')}`)
+  console.error(`nostrclaw ${VERSION} ready (${cfg.signing.enabled ? 'signing ENABLED' : 'read-only'}) — relays: ${cfg.relays.join(', ')}`)
 }
 
 main().catch((e) => {
