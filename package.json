@@ -1,0 +1,36 @@
+{
+  "name": "nostrclaw",
+  "version": "0.1.0",
+  "description": "MCP server that lets Claude analyse a Nostr relay (read-only), with remote signing (NIP-46) planned.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "nostrclaw": "dist/index.js"
+  },
+  "main": "dist/index.js",
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "start": "node dist/index.js",
+    "pretest": "npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "nostr-tools": "^2.25.2",
+    "ws": "^8.22.0",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "@types/ws": "^8.18.2",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11"
+  }
+}
