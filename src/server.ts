@@ -5,6 +5,7 @@ import { nip19, type Event, type Filter } from 'nostr-tools'
 import { z } from 'zod'
 import { buildReport, kindName, parseProfile, viewEvent } from './analysis.js'
 import { VERSION, type Config } from './config.js'
+import type { QueryResult } from './nostr/client.js'
 import { realApi, type NostrApi } from './nostr/client.js'
 import { createSigningContext, registerSigningTools, type SigningContext } from './signing/tools.js'
 import { coverage, eventsPerHour, isStoredKind } from './compare.js'
@@ -21,6 +22,7 @@ export const INSTRUCTIONS = [
   'A relay only knows the events it holds, so "first seen" figures mean "the oldest event this relay returned", not the age of an account.',
   'Start with relay_overview, then activity_report for the big picture; account_triage ranks the authors that look like throw-away or abusive keys (with the reason for every point);',
   'recent_events / author_report look closer at events and keys, and event_engagement shows the replies, reactions, reposts and zaps of one event.',
+  'recent_events, count_events, activity_report and author_report take `relays` (several at once): the answers are merged without duplicates and the result says what each relay returned; a busy relay returns only its newest events, so check perRelay before comparing.',
   'With several relays configured, compare_relays contrasts them (information, speed, how much of what they hold is on the others) and event_locations says which relays hold given events.',
   'Scores are triage aids, not verdicts: a missing profile on this relay does not mean the account is new elsewhere.',
 ].join(' ')
@@ -49,6 +51,9 @@ export function toTagFilter(tags: Record<string, string[]> | undefined): Record<
 
 const relaysParam = z.array(z.string()).min(2).max(8).optional()
   .describe('Relays to compare (wss://…), at least 2. Each must be one of the configured relays; default: all of them. See nostrclaw_status.')
+
+const relaysManyParam = z.array(z.string()).min(2).max(8).optional()
+  .describe('Several relays (each must be configured): the same question goes to all of them and the answers are merged without duplicates; the result says what each relay returned. Overrides `relay`.')
 
 const hoursParam = (def: number, max: number) => z.number().positive().max(max).default(def)
 
@@ -84,6 +89,35 @@ export function createServer(cfg: Config, api: NostrApi = realApi, clock: () => 
     complete: r.eose, closedByRelay: r.closed ? cleanText(r.closed, 200) : undefined, invalidSignaturesDropped: r.invalid || undefined,
     tookMs: r.ms, relayNotices: r.notices.length ? r.notices.map((n) => cleanText(n, 200)) : undefined,
   })
+
+  interface PerRelay { relay: string; returned?: number; complete?: boolean; tookMs?: number; truncated?: boolean; oldest?: string; newest?: string; error?: string }
+  type Merged = QueryResult & { perRelay: PerRelay[]; seenOn: Map<string, string[]> }
+
+  /** The relays a tool reads: the list given in `relays`, or the single `relay` (default: the first configured). */
+  const pickUrls = (relay: string | undefined, relays: string[] | undefined): string[] =>
+    relays?.length ? [...new Set(relays.map((r) => resolveRelay(r, cfg)))] : [resolveRelay(relay, cfg)]
+
+  /** The same query to every relay, merged without duplicates (newest first). One relay failing is reported, not fatal; all failing is. */
+  const queryMany = async (urls: string[], filter: Filter, max: number): Promise<Merged> => {
+    const rs = await Promise.allSettled(urls.map((u) => query(u, filter, max)))
+    const ok = rs.flatMap((r, i) => (r.status === 'fulfilled' ? [{ url: urls[i]!, r: r.value }] : []))
+    if (!ok.length) throw (rs[0] as PromiseRejectedResult).reason
+    const seen = new Map<string, Event>(), seenOn = new Map<string, string[]>()
+    for (const { url, r } of ok) for (const e of r.events) { seen.set(e.id, e); seenOn.set(e.id, [...(seenOn.get(e.id) ?? []), url]) }
+    const iso = (t: number) => new Date(t * 1000).toISOString()
+    const perRelay = rs.map((r, i): PerRelay => {
+      if (r.status === 'rejected') return { relay: urls[i]!, error: cleanText(r.reason instanceof Error ? r.reason.message : String(r.reason), 200) }
+      const ts = r.value.events.map((e) => e.created_at)
+      return { relay: urls[i]!, returned: ts.length, complete: r.value.eose, tookMs: r.value.ms, truncated: ts.length >= max, oldest: ts.length ? iso(Math.min(...ts)) : undefined, newest: ts.length ? iso(Math.max(...ts)) : undefined }
+    })
+    return {
+      events: [...seen.values()].sort((x, y) => y.created_at - x.created_at), eose: ok.length === urls.length && ok.every((x) => x.r.eose),
+      closed: ok.find((x) => x.r.closed)?.r.closed, notices: ok.flatMap((x) => x.r.notices.map((n) => (urls.length > 1 ? `${x.url}: ${n}` : n))),
+      invalid: ok.reduce((n, x) => n + x.r.invalid, 0), ms: Math.max(...ok.map((x) => x.r.ms)), perRelay, seenOn,
+    }
+  }
+  /** How the result names where it came from: one relay as before, or the list with what each returned. */
+  const where = (urls: string[], r: Merged) => (urls.length === 1 ? { relay: urls[0] } : { relays: urls, perRelay: r.perRelay })
 
   server.registerTool('nostrclaw_status', {
     title: 'nostrclaw status',
@@ -128,7 +162,7 @@ export function createServer(cfg: Config, api: NostrApi = realApi, clock: () => 
     title: 'Recent events',
     description: 'Fetches recent events from a relay, newest first, optionally filtered by kind, author and age. Content is cleaned (hidden characters removed) and truncated. Signatures are verified; events with a bad signature are dropped and counted.',
     inputSchema: {
-      relay: relayParam, kinds: kindsParam,
+      relay: relayParam, relays: relaysManyParam, kinds: kindsParam,
       authors: z.array(hex64).max(20).optional().describe('Only these authors (64-hex public keys).'),
       sinceHours: z.number().positive().max(24 * 365).optional().describe('Only events newer than this many hours.'),
       tags: tagsParam,
@@ -136,59 +170,75 @@ export function createServer(cfg: Config, api: NostrApi = realApi, clock: () => 
       maxContentChars: z.number().int().min(20).max(2000).default(240).describe('Truncate each content to this many characters.'),
     },
     annotations: READ_ONLY,
-  }, guard(async (a: { relay?: string; kinds?: number[]; authors?: string[]; sinceHours?: number; tags?: Record<string, string[]>; limit: number; maxContentChars: number }) => {
-    const url = resolveRelay(a.relay, cfg), now = clock()
+  }, guard(async (a: { relay?: string; relays?: string[]; kinds?: number[]; authors?: string[]; sinceHours?: number; tags?: Record<string, string[]>; limit: number; maxContentChars: number }) => {
+    const urls = pickUrls(a.relay, a.relays), now = clock()
     const filter: Filter = { limit: Math.min(a.limit, cfg.maxEvents), ...toTagFilter(a.tags) }
     if (a.kinds?.length) filter.kinds = a.kinds
     if (a.authors?.length) filter.authors = a.authors.map((x) => x.toLowerCase())
     if (a.sinceHours) filter.since = Math.floor(now - a.sinceHours * 3600)
-    const r = await query(url, filter, filter.limit!)
-    const events = r.events.sort((x, y) => y.created_at - x.created_at)
-    return { relay: url, filter, returned: events.length, ...queryNote(r), untrusted: { events: events.map((e) => viewEvent(e, now, a.maxContentChars)) }, note: UNTRUSTED_NOTE }
+    const r = await queryMany(urls, filter, filter.limit!)
+    const events = r.events.slice(0, filter.limit)
+    return {
+      ...where(urls, r), filter, returned: events.length, ...queryNote(r),
+      untrusted: { events: events.map((e) => ({ ...viewEvent(e, now, a.maxContentChars), foundOn: urls.length > 1 ? r.seenOn.get(e.id) : undefined })) }, note: UNTRUSTED_NOTE,
+    }
   }))
 
   server.registerTool('count_events', {
     title: 'Count events',
     description: 'Counts the events matching a filter using NIP-45 COUNT, without downloading them. Reports clearly when the relay does not support COUNT.',
     inputSchema: {
-      relay: relayParam, kinds: kindsParam, authors: z.array(hex64).max(20).optional(),
+      relay: relayParam, relays: relaysManyParam, kinds: kindsParam, authors: z.array(hex64).max(20).optional(),
       sinceHours: z.number().positive().max(24 * 365).optional().describe('Only events newer than this many hours.'),
       tags: tagsParam,
     },
     annotations: READ_ONLY,
-  }, guard(async (a: { relay?: string; kinds?: number[]; authors?: string[]; sinceHours?: number; tags?: Record<string, string[]> }) => {
-    const url = resolveRelay(a.relay, cfg)
+  }, guard(async (a: { relay?: string; relays?: string[]; kinds?: number[]; authors?: string[]; sinceHours?: number; tags?: Record<string, string[]> }) => {
+    const urls = pickUrls(a.relay, a.relays)
     const filter: Filter = { ...toTagFilter(a.tags) }
     if (a.kinds?.length) filter.kinds = a.kinds
     if (a.authors?.length) filter.authors = a.authors.map((x) => x.toLowerCase())
     if (a.sinceHours) filter.since = Math.floor(clock() - a.sinceHours * 3600)
-    const r = await api.count(url, filter, opts)
-    return { relay: url, filter, count: r.count, unsupportedOrFailed: r.count === null ? cleanText(r.reason ?? '', 200) : undefined, tookMs: r.ms }
+    if (urls.length === 1) {
+      const r = await api.count(urls[0]!, filter, opts)
+      return { relay: urls[0], filter, count: r.count, unsupportedOrFailed: r.count === null ? cleanText(r.reason ?? '', 200) : undefined, tookMs: r.ms }
+    }
+    // several relays: one count each, NOT added up (the same event can be on several relays, so a sum would count it twice)
+    const rs = await Promise.allSettled(urls.map((u) => api.count(u, filter, opts)))
+    return {
+      relays: urls, filter,
+      counts: rs.map((r, i) => (r.status === 'fulfilled'
+        ? { relay: urls[i], count: r.value.count, unsupportedOrFailed: r.value.count === null ? cleanText(r.value.reason ?? '', 200) : undefined, tookMs: r.value.ms }
+        : { relay: urls[i], count: null, unsupportedOrFailed: cleanText(r.reason instanceof Error ? r.reason.message : String(r.reason), 200) })),
+      note: 'Counts are per relay and are not added up: the same event can be held by several relays. Some relays also answer COUNT with tag filters wrongly (a false 0).',
+    }
   }))
 
   server.registerTool('activity_report', {
     title: 'Activity report',
     description: 'Analyses a sample of recent events: counts by kind, events per hour, most active authors, repeated text across keys, bursts from one key, share of authors with a single event, and a list of notable signals (possible spam or throw-away keys). The sample is the newest events in the window, up to sampleLimit.',
     inputSchema: {
-      relay: relayParam, kinds: kindsParam,
+      relay: relayParam, relays: relaysManyParam, kinds: kindsParam,
       hours: hoursParam(24, 24 * 30).describe('Time window in hours (default 24).'),
       tags: tagsParam,
-      sampleLimit: z.number().int().min(10).max(2000).default(300).describe('Most events to analyse (the relay may return fewer).'),
+      sampleLimit: z.number().int().min(10).max(2000).default(300).describe('Most events to analyse per relay (a relay may return fewer).'),
     },
     annotations: READ_ONLY,
-  }, guard(async (a: { relay?: string; kinds?: number[]; hours: number; tags?: Record<string, string[]>; sampleLimit: number }) => {
-    const url = resolveRelay(a.relay, cfg), now = clock()
+  }, guard(async (a: { relay?: string; relays?: string[]; kinds?: number[]; hours: number; tags?: Record<string, string[]>; sampleLimit: number }) => {
+    const urls = pickUrls(a.relay, a.relays), now = clock()
     const limit = Math.min(a.sampleLimit, cfg.maxEvents)
     const filter: Filter = { since: Math.floor(now - a.hours * 3600), limit, ...toTagFilter(a.tags) }
     if (a.kinds?.length) filter.kinds = a.kinds
-    const r = await query(url, filter, limit)
+    const r = await queryMany(urls, filter, limit)
     const report = buildReport(r.events, { kindsFiltered: !!a.kinds?.length })
-    const truncated = r.events.length >= limit
+    const truncated = urls.length === 1 ? r.events.length >= limit : r.perRelay.some((p) => p.truncated)
     const { repeatedText, signals, ...rest } = report
     return {
-      relay: url, windowHours: a.hours, ...queryNote(r),
+      ...where(urls, r), windowHours: a.hours, ...queryNote(r),
       sampleIsTruncated: truncated,
-      truncationNote: truncated ? `The relay returned ${limit} events, the newest in the window; there are probably more. Raise sampleLimit or shorten hours for a complete picture.` : undefined,
+      truncationNote: !truncated ? undefined : urls.length === 1
+        ? `The relay returned ${limit} events, the newest in the window; there are probably more. Raise sampleLimit or shorten hours for a complete picture.`
+        : `At least one relay returned its ${limit} newest events and stopped (see perRelay): the span each one covers differs, so the merged rates and the busiest hours are NOT comparable between relays. Shorten hours, or look at one relay at a time, for a fair picture.`,
       ...rest,
       signals: signals.map((s) => ({ kind: s.kind, detail: cleanText(s.detail, 200) })),
       untrusted: { repeatedText },
@@ -200,30 +250,30 @@ export function createServer(cfg: Config, api: NostrApi = realApi, clock: () => 
     title: 'Author report',
     description: 'Looks at one public key: its profile (kind 0), follow count, relay list, and its recent events on this relay with the same analysis as activity_report. "first/last" are the oldest/newest events this relay returned, not the age of the account.',
     inputSchema: {
-      relay: relayParam,
+      relay: relayParam, relays: relaysManyParam,
       pubkey: z.string().describe('The author, as 64-character hex or an npub.'),
-      limit: z.number().int().min(5).max(200).default(50).describe('How many recent events to analyse.'),
+      limit: z.number().int().min(5).max(200).default(50).describe('How many recent events to analyse (per relay when several are given).'),
     },
     annotations: READ_ONLY,
-  }, guard(async (a: { relay?: string; pubkey: string; limit: number }) => {
-    const url = resolveRelay(a.relay, cfg), now = clock()
+  }, guard(async (a: { relay?: string; relays?: string[]; pubkey: string; limit: number }) => {
+    const urls = pickUrls(a.relay, a.relays), now = clock()
     const pubkey = toHexPubkey(a.pubkey, (s) => { try { const d = nip19.decode(s); return d.type === 'npub' ? d.data : null } catch { return null } })
     const limit = Math.min(a.limit, cfg.maxEvents)
     const [profile, follows, relays, recent] = await Promise.all([
-      query(url, { kinds: [0], authors: [pubkey], limit: 1 }, 1),
-      query(url, { kinds: [3], authors: [pubkey], limit: 1 }, 1),
-      query(url, { kinds: [10002], authors: [pubkey], limit: 1 }, 1),
-      query(url, { authors: [pubkey], limit }, limit),
+      queryMany(urls, { kinds: [0], authors: [pubkey], limit: 1 }, 1),
+      queryMany(urls, { kinds: [3], authors: [pubkey], limit: 1 }, 1),
+      queryMany(urls, { kinds: [10002], authors: [pubkey], limit: 1 }, 1),
+      queryMany(urls, { authors: [pubkey], limit }, limit),
     ])
     const latest = (r: typeof profile) => [...r.events].sort((x, y) => y.created_at - x.created_at)[0]
     const report = buildReport(recent.events, { topN: 5 })
     const relayList = (latest(relays)?.tags ?? []).filter((t) => t[0] === 'r' && t[1]).slice(0, 10).map((t) => cleanText(t[1], 100))
     return {
-      relay: url, pubkey, npub: nip19.npubEncode(pubkey),
+      ...where(urls, recent), pubkey, npub: nip19.npubEncode(pubkey),
       hasProfile: profile.events.length > 0,
       follows: latest(follows) ? latest(follows)!.tags.filter((t) => t[0] === 'p').length : undefined,
       eventsAnalysed: recent.events.length, ...queryNote(recent),
-      observedOnThisRelay: recent.events.length ? { oldest: report.sample.from, newest: report.sample.to, spanHours: report.sample.spanHours } : undefined,
+      [urls.length === 1 ? 'observedOnThisRelay' : 'observedAcrossRelays']: recent.events.length ? { oldest: report.sample.from, newest: report.sample.to, spanHours: report.sample.spanHours } : undefined,
       byKind: report.byKind, bursts: report.bursts, content: report.content,
       latestEvents: recent.events.sort((x, y) => y.created_at - x.created_at).slice(0, 5).map((e) => { const v = viewEvent(e, now, 0); return { id: v.id, kind: v.kind, kindName: v.kindName, createdAt: v.createdAt, ageMinutes: v.ageMinutes, contentLength: v.contentLength } }),
       untrusted: {

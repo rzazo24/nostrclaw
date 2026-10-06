@@ -44,6 +44,8 @@ Después pídele a Claude cosas como *«Audita mi relé»*, *«¿De qué está h
 | `trust_score` | Puntuación de red de confianza para claves, a partir de las listas de seguidos que guardan los relés: seguidores, seguidores que a su vez tienen seguidores, cercanía a claves en las que *tú* confías (`trusted`), claves distintas que interactuaron con ella y tiempo visto. Pasa `pubkeys`, o ninguna para examinar las claves *nuevas* de una ventana reciente. Un anillo de claves desechables que se siguen entre sí sigue en «unknown»; cada punto lleva su motivo; es una ayuda, no una comprobación de identidad |
 | `event_locations` | Para hasta 20 ids de evento, qué relés configurados tienen cada uno (solo tipo y antigüedad, sin contenido) |
 
+`recent_events`, `count_events`, `activity_report` y `author_report` aceptan también `relays` (2 a 8 relés configurados) para preguntar a todos a la vez: las respuestas se juntan **sin duplicados**, `recent_events` indica qué relés tienen cada evento, `count_events` da un recuento por relé (sin sumarlos) y todos los resultados incluyen `perRelay` (qué devolvió cada uno, si se cortó en el límite, su evento más antiguo y más nuevo). Si un relé falla se informa y los demás contestan. Con un solo relé la salida es la de siempre.
+
 Las dos herramientas de comparación necesitan al menos dos relés en `NOSTRCLAW_RELAYS` (separados por comas).
 
 `recent_events`, `count_events` y `activity_report` aceptan también un filtro `tags` (`{"e": [id]}`, `{"p": [pubkey]}`, `{"t": ["bitcoin"]}`).

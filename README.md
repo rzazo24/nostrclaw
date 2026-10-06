@@ -44,6 +44,8 @@ Then ask Claude things like *“Audit my relay”*, *“What is the traffic of t
 | `trust_score` | Web-of-trust score for keys from the follow lists the relays hold: followers, followers that are themselves followed, closeness to keys *you* trust (`trusted`), distinct keys that interacted with it, time seen. Give `pubkeys`, or none to examine the *new* keys of a recent window. A follow ring of throw-away keys stays "unknown"; every point has its reason; it is an aid, not an identity check |
 | `event_locations` | For up to 20 event ids, which configured relays hold each (kind and age only, no content) |
 
+`recent_events`, `count_events`, `activity_report` and `author_report` also take `relays` (2 to 8 configured relays) to ask all of them at once: answers are merged **without duplicates**, `recent_events` shows which relays hold each event, `count_events` gives one count per relay (not added up), and every result includes `perRelay` (what each returned, whether it was cut at the limit, its oldest/newest event). A relay that fails is reported and the rest still answer. With one relay the output is as before.
+
 The two comparison tools need at least two relays in `NOSTRCLAW_RELAYS` (comma-separated).
 
 `recent_events`, `count_events` and `activity_report` also accept a `tags` filter (`{"e": [id]}`, `{"p": [pubkey]}`, `{"t": ["bitcoin"]}`).

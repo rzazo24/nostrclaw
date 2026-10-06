@@ -567,3 +567,77 @@ describe('review_interactions', () => {
   })
 })
 
+describe('several relays at once', () => {
+  const A = 'wss://relay.example.com', B = 'wss://other.example.org', C = 'wss://third.example.net'
+  const two = () => cfg({ relays: [A, B] })
+  // each relay holds its own events and honours the filter, like a real one
+  const relays = (map: Record<string, ReturnType<typeof ev>[]>): Partial<NostrApi> => ({
+    async query(relay, f, o) {
+      const all = map[relay]; if (!all) throw new Error(`could not talk to ${relay}: connection refused`)
+      const got = all.filter((e) => matchFilter(f as Filter, e)).sort((x, y) => y.created_at - x.created_at).slice(0, Math.min(o.max, (f as { limit?: number }).limit ?? o.max))
+      return { events: got, eose: true, notices: [], invalid: 0, ms: relay === A ? 10 : 30 }
+    },
+    async count(relay, f) { const all = map[relay]; if (!all) throw new Error('refused'); return { count: all.filter((e) => matchFilter(f as Filter, e)).length, ms: 4 } },
+  })
+
+  it('recent_events merges without duplicates, says which relays hold each event, and survives one relay being down', async () => {
+    const k = key()
+    const [e1, e2, e3] = [ev(k, 1, 'on both', NOW - 30), ev(k, 1, 'only on A', NOW - 20), ev(k, 1, 'only on B', NOW - 10)]
+    const { client } = await setup(relays({ [A]: [e1, e2], [B]: [e1, e3] }), cfg({ relays: [A, B, C] }))
+    const r = (await call(client, 'recent_events', { relays: [A, B, C], limit: 10 })).json
+    expect(r.returned).toBe(3)
+    expect(r.untrusted.events.map((e: { content: string }) => e.content)).toEqual(['only on B', 'only on A', 'on both']) // newest first
+    const foundOn = Object.fromEntries(r.untrusted.events.map((e: { content: string; foundOn: string[] }) => [e.content, e.foundOn]))
+    expect(foundOn).toEqual({ 'on both': [A, B], 'only on A': [A], 'only on B': [B] })
+    expect(r.perRelay.map((p: { relay: string; returned?: number; error?: string }) => [p.relay, p.returned ?? p.error])).toEqual([[A, 2], [B, 2], [C, expect.stringMatching(/connection refused/)]])
+    expect(r.complete).toBe(false) // one relay did not answer
+    expect(r.relay).toBeUndefined()
+  })
+
+  it('refuses to read from relays that are not configured, and fails only when EVERY relay fails', async () => {
+    const { client } = await setup(relays({}), two())
+    expect((await call(client, 'recent_events', { relays: [A, 'wss://evil.example.com'] })).text).toMatch(/not in the allowed list|not allowed|configured/i)
+    expect((await call(client, 'recent_events', { relays: [A, B] })).text).toMatch(/connection refused/)
+  })
+
+  it('author_report finds the profile on one relay and the notes on another, and shows where its events live', async () => {
+    const bot = key()
+    const notes = Array.from({ length: 6 }, (_, i) => ev(bot, 1, `Weekly leaderboard number ${['a', 'b', 'c', 'd', 'e', 'f'][i]} for the community`, NOW - 100 - i * 60))
+    const { client } = await setup(relays({ [A]: [ev(bot, 0, '{"name":"bot"}', NOW - 9000)], [B]: notes }), two())
+    const r = (await call(client, 'author_report', { relays: [A, B], pubkey: bot.pk, limit: 50 })).json
+    expect(r).toMatchObject({ hasProfile: true, eventsAnalysed: 7 })
+    expect(r.untrusted.profile.name).toBe('bot')
+    expect(r.perRelay.map((p: { relay: string; returned: number }) => [p.relay, p.returned])).toEqual([[A, 1], [B, 6]])
+    expect(r.observedAcrossRelays).toBeDefined(); expect(r.observedOnThisRelay).toBeUndefined()
+    // with one relay the output keeps its old shape
+    const one = (await call(client, 'author_report', { relay: B, pubkey: bot.pk })).json
+    expect(one.relay).toBe(B); expect(one.perRelay).toBeUndefined(); expect(one.observedOnThisRelay).toBeDefined(); expect(one.hasProfile).toBe(false)
+  })
+
+  it('activity_report counts an event held by both relays once, and warns that truncated relays cover different spans', async () => {
+    const k = key()
+    const shared = ev(k, 1, 'the same note on both relays', NOW - 50)
+    const small = await setup(relays({ [A]: [shared, ev(k, 1, 'only on A here', NOW - 40)], [B]: [shared] }), two())
+    const r = (await call(small.client, 'activity_report', { relays: [A, B], hours: 24, sampleLimit: 10 })).json
+    expect(r.sample.events).toBe(2) // not 3
+    expect(r.sampleIsTruncated).toBe(false); expect(r.truncationNote).toBeUndefined()
+
+    // a busy relay returns only its newest events (twelve in twelve seconds, the limit is ten); the quiet one reaches much further back
+    const busy = Array.from({ length: 12 }, (_, i) => ev(k, 1, `busy relay note number ${i} here`, NOW - 10 - i))
+    const tight = await setup(relays({ [A]: busy, [B]: [shared] }), two())
+    const t = (await call(tight.client, 'activity_report', { relays: [A, B], hours: 24, sampleLimit: 10 })).json
+    expect(t.sampleIsTruncated).toBe(true)
+    expect(t.truncationNote).toMatch(/NOT comparable between relays/)
+    expect(t.perRelay.find((p: { relay: string }) => p.relay === A)).toMatchObject({ truncated: true, returned: 10 })
+    expect(t.perRelay.find((p: { relay: string }) => p.relay === B)).toMatchObject({ truncated: false, returned: 1 })
+  })
+
+  it('count_events gives one count per relay and does not add them up', async () => {
+    const k = key(), shared = ev(k, 1, 'on both', NOW - 5)
+    const { client } = await setup(relays({ [A]: [shared, ev(k, 1, 'a', NOW - 4)], [B]: [shared] }), two())
+    const r = (await call(client, 'count_events', { relays: [A, B], kinds: [1] })).json
+    expect(r.counts.map((c: { relay: string; count: number }) => [c.relay, c.count])).toEqual([[A, 2], [B, 1]])
+    expect(r.count).toBeUndefined(); expect(r.note).toMatch(/not added up/)
+  })
+})
+
