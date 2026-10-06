@@ -2,7 +2,7 @@
 
 *Leer en español: [README.es.md](README.es.md)*
 
-An [MCP](https://modelcontextprotocol.io) server that lets Claude **analyse a Nostr relay**: is it healthy, what does it advertise, what is going through it, and which keys look suspicious. By default it is **read-only**. Optionally (off until you enable it) Claude can also **draft and publish notes and reactions** through a remote signer ([NIP-46](https://github.com/nostr-protocol/nips/blob/master/46.md): Clave, nsec.app, a bunker) — your private key never reaches this program and every publication needs your explicit confirmation. See [Publishing](#publishing-optional-nip-46) and [docs/signing-design.md](docs/signing-design.md).
+An [MCP](https://modelcontextprotocol.io) server that lets Claude **analyse a Nostr relay**: is it healthy, what does it advertise, what is going through it, and which keys look suspicious or automated, who vouches for them, and who is interacting with a note. By default it is **read-only**. Optionally (off until you enable it) Claude can also **draft and publish notes and reactions** through a remote signer ([NIP-46](https://github.com/nostr-protocol/nips/blob/master/46.md): Clave, nsec.app, a bunker) — your private key never reaches this program and every publication needs your explicit confirmation. See [Publishing](#publishing-optional-nip-46) and [docs/signing-design.md](docs/signing-design.md).
 
 Written in TypeScript on the official MCP SDK and `nostr-tools`. It runs locally over stdio (Claude Code, Claude Desktop) and talks to the relays you allow, nothing else.
 
@@ -52,7 +52,7 @@ The two comparison tools need at least two relays in `NOSTRCLAW_RELAYS` (comma-s
 
 ## Publishing (optional, NIP-46)
 
-Off by default. Enable it with `NOSTRCLAW_ENABLE_SIGNING=1` and five more tools appear:
+Off by default. Enable it with `NOSTRCLAW_ENABLE_SIGNING=1` and eight more tools appear:
 
 | Tool | What it does |
 |---|---|
@@ -72,7 +72,7 @@ How it stays under your control:
 - **Clave in the background:** with manual approval (*low trust*) Clave shows a **blank notification** and waits for you; tap it and approve. nostrclaw keeps asking for about two and a half minutes while you do.
 - **Use manual approval in the signer** (Clave: *low trust*). If the signer approves by itself, anything that can read the app key saved on your machine — including an assistant with a shell — could ask it for signatures with no prompt; nostrclaw warns when it sees that.
 - **“Always allow” is detected.** Without elicitation, the signer's approval is the lock — so it is verified: a signature that comes back faster than a person could decide (default 2 s) is **discarded and never published**, and further publishing is refused until you fix the signer and reconnect.
-- **Policy you own** (`~/.config/nostrclaw/policy.json`, no tool can write it): allowed kinds (default notes `1` and reactions `7` only), publications per hour (default 5), maximum length, relays, and blocked patterns (anything that looks like an `nsec1…`, `bunker://`, `secret=`…). An invalid file stops the server.
+- **Policy you own** (`~/.config/nostrclaw/policy.json`, no tool can write it): allowed kinds (default notes `1` and reactions `7` only), signatures per hour (default 5; counts signatures actually made), maximum length, relays, and blocked patterns (anything that looks like an `nsec1…`, `bunker://`, `secret=`…). An invalid file stops the server.
 - **The model cannot alter or replay anything:** `publish_event` takes only a draft id; the signed event is checked against the draft and goes only to the relays, never back into the conversation.
 - **Audit log** (`~/.local/state/nostrclaw/audit.jsonl`): every step with ids and hashes, never content or secrets.
 
@@ -135,16 +135,24 @@ The signing tests run a pretend NIP-46 signer (`test/fake-signer.ts`) through th
 |---|---|
 | `src/server.ts` | The tools and the `audit_relay` prompt |
 | `src/analysis.ts` | The analysis: pure functions over events (no network) |
+| `src/text.ts`, `src/bursts.ts` | Repeated-text clustering (near-copies included) and burst detection |
+| `src/triage.ts` | `account_triage`: behaviour score of the authors in a window |
+| `src/trust.ts` | `trust_score`: web-of-trust score from follow lists, interactions and age |
+| `src/review.ts` | `review_interactions`: verdict per person (promotional bot / automated / …) |
+| `src/compare.ts` | `compare_relays`: events per hour and propagation between relays |
+| `src/compose.ts` | Tags of reactions (NIP-25), replies (NIP-10), hashtags and mentions |
+| `src/doctor.ts` | `nostrclaw doctor`: read-only check of the set-up |
 | `src/safety.ts` | Relay allowlist, private-address guard, cleaning of third-party text |
 | `src/nostr/client.ts` | Minimal read-only Nostr client (REQ, COUNT, NIP-11, `/stats.json`) |
-| `src/signing/` | Publishing: `policy.ts` (your policy file), `signer.ts` (NIP-46 session), `tools.ts` (the five tools), `audit.ts` |
+| `src/signing/` | Publishing: `policy.ts` (your policy file), `signer.ts` (NIP-46 session), `tools.ts` (the eight tools), `audit.ts` |
 | `src/config.ts`, `src/index.ts` | Configuration and the stdio entry point |
 
 ## Roadmap
 
 1. **0.1**: read-only analysis.
-2. **0.2 (now)**: NIP-46 signing, opt-in — connect to a remote signer, draft events, publish only after explicit human confirmation. Design and threat model in [docs/signing-design.md](docs/signing-design.md).
-3. Later: more analysis (multi-relay comparison, follow-graph / web-of-trust signals).
+2. **0.2**: NIP-46 signing, opt-in — connect to a remote signer, draft events, publish only after explicit human confirmation. Design and threat model in [docs/signing-design.md](docs/signing-design.md).
+3. **0.3 – 0.9 (now)**: `account_triage`, `event_engagement`, `trust_score` (web of trust), `compare_relays` and `event_locations` (propagation between relays), `review_interactions` (bots), `draft_reaction` / `draft_reply`, a quick signer check before asking you, `retry_publish`, `nostrclaw doctor`, and analysis across several relays at once.
+4. Ideas, not started: deleting your own notes (NIP-09), publishing the package on npm.
 
 ## License
 

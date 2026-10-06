@@ -2,7 +2,7 @@
 
 *Read in English: [README.md](README.md)*
 
-Un servidor [MCP](https://modelcontextprotocol.io) que permite a Claude **analizar un relé de Nostr**: si está sano, qué anuncia, qué pasa por él y qué claves parecen sospechosas. Por defecto es de **solo lectura**. Opcionalmente (apagado hasta que lo actives) Claude también puede **preparar y publicar notas y reacciones** mediante un firmador remoto ([NIP-46](https://github.com/nostr-protocol/nips/blob/master/46.md): Clave, nsec.app, un bunker): tu clave privada nunca llega a este programa y cada publicación necesita tu confirmación explícita. Mira [Publicar](#publicar-opcional-nip-46) y [docs/signing-design.md](docs/signing-design.md) (en inglés).
+Un servidor [MCP](https://modelcontextprotocol.io) que permite a Claude **analizar un relé de Nostr**: si está sano, qué anuncia, qué pasa por él y qué claves parecen sospechosas o automatizadas, quién las avala y quién interactúa con una nota. Por defecto es de **solo lectura**. Opcionalmente (apagado hasta que lo actives) Claude también puede **preparar y publicar notas y reacciones** mediante un firmador remoto ([NIP-46](https://github.com/nostr-protocol/nips/blob/master/46.md): Clave, nsec.app, un bunker): tu clave privada nunca llega a este programa y cada publicación necesita tu confirmación explícita. Mira [Publicar](#publicar-opcional-nip-46) y [docs/signing-design.md](docs/signing-design.md) (en inglés).
 
 Escrito en TypeScript sobre el SDK oficial de MCP y `nostr-tools`. Funciona en local por stdio (Claude Code, Claude Desktop) y solo habla con los relés que permitas.
 
@@ -52,7 +52,7 @@ Las dos herramientas de comparación necesitan al menos dos relés en `NOSTRCLAW
 
 ## Publicar (opcional, NIP-46)
 
-Desactivado por defecto. Se activa con `NOSTRCLAW_ENABLE_SIGNING=1` y aparecen cinco herramientas más:
+Desactivado por defecto. Se activa con `NOSTRCLAW_ENABLE_SIGNING=1` y aparecen ocho herramientas más:
 
 | Herramienta | Qué hace |
 |---|---|
@@ -72,7 +72,7 @@ Cómo queda todo bajo tu control:
 - **Clave en segundo plano:** con aprobación manual (*low trust*) Clave muestra una **notificación en blanco** y espera; púlsala y aprueba. nostrclaw sigue preguntando unos dos minutos y medio mientras lo haces.
 - **Usa la aprobación manual del firmador** (Clave: *low trust*). Si el firmador aprueba solo, cualquier cosa que pueda leer la clave de aplicación guardada en tu máquina —incluido un asistente con terminal— podría pedirle firmas sin ninguna pregunta; nostrclaw avisa cuando lo detecta.
 - **Se detecta el «aprobar siempre».** Sin elicitación, la aprobación del firmador es la cerradura, así que se verifica: una firma que vuelve más rápido de lo que podría decidir una persona (por defecto 2 s) se **descarta y nunca se publica**, y se rechazan más publicaciones hasta que arregles el firmador y vuelvas a conectar.
-- **Una política tuya** (`~/.config/nostrclaw/policy.json`, ninguna herramienta puede escribirla): tipos permitidos (por defecto solo notas `1` y reacciones `7`), publicaciones por hora (por defecto 5), longitud máxima, relés y patrones bloqueados (todo lo que parezca un `nsec1…`, `bunker://`, `secret=`…). Un archivo inválido detiene el servidor.
+- **Una política tuya** (`~/.config/nostrclaw/policy.json`, ninguna herramienta puede escribirla): tipos permitidos (por defecto solo notas `1` y reacciones `7`), firmas por hora (por defecto 5; cuenta las firmas realmente hechas), longitud máxima, relés y patrones bloqueados (todo lo que parezca un `nsec1…`, `bunker://`, `secret=`…). Un archivo inválido detiene el servidor.
 - **El modelo no puede alterar ni reenviar nada:** `publish_event` solo recibe un id de borrador; el evento firmado se compara con el borrador y va únicamente a los relés, nunca de vuelta a la conversación.
 - **Registro de auditoría** (`~/.local/state/nostrclaw/audit.jsonl`): cada paso con ids y hashes, nunca contenido ni secretos.
 
@@ -135,16 +135,24 @@ Las pruebas de firma usan un firmador NIP-46 de mentira (`test/fake-signer.ts`) 
 |---|---|
 | `src/server.ts` | Las herramientas y el prompt `audit_relay` |
 | `src/analysis.ts` | El análisis: funciones puras sobre eventos (sin red) |
+| `src/text.ts`, `src/bursts.ts` | Agrupación de textos repetidos (también casi iguales) y detección de ráfagas |
+| `src/triage.ts` | `account_triage`: puntuación de comportamiento de los autores de una ventana |
+| `src/trust.ts` | `trust_score`: confianza por red de seguidos, interacciones y antigüedad |
+| `src/review.ts` | `review_interactions`: veredicto por persona (bot promocional / automatizada / …) |
+| `src/compare.ts` | `compare_relays`: eventos por hora y propagación entre relés |
+| `src/compose.ts` | Etiquetas de reacciones (NIP-25), respuestas (NIP-10), hashtags y menciones |
+| `src/doctor.ts` | `nostrclaw doctor`: revisión de solo lectura de la configuración |
 | `src/safety.ts` | Lista de relés, protección de direcciones privadas, limpieza del texto ajeno |
 | `src/nostr/client.ts` | Cliente de Nostr mínimo y de solo lectura (REQ, COUNT, NIP-11, `/stats.json`) |
-| `src/signing/` | Publicar: `policy.ts` (tu archivo de política), `signer.ts` (sesión NIP-46), `tools.ts` (las cinco herramientas), `audit.ts` |
+| `src/signing/` | Publicar: `policy.ts` (tu archivo de política), `signer.ts` (sesión NIP-46), `tools.ts` (las ocho herramientas), `audit.ts` |
 | `src/config.ts`, `src/index.ts` | Configuración y punto de entrada por stdio |
 
 ## Hoja de ruta
 
 1. **0.1**: análisis de solo lectura.
-2. **0.2 (ahora)**: firma con NIP-46, opcional — conectar con un firmador remoto, preparar borradores y publicar solo tras confirmación humana explícita. Diseño y modelo de amenazas en [docs/signing-design.md](docs/signing-design.md).
-3. Más adelante: más análisis (comparar varios relés, señales del grafo de seguidos / red de confianza).
+2. **0.2**: firma con NIP-46, opcional — conectar con un firmador remoto, preparar borradores y publicar solo tras confirmación humana explícita. Diseño y modelo de amenazas en [docs/signing-design.md](docs/signing-design.md).
+3. **0.3 – 0.9 (ahora)**: `account_triage`, `event_engagement`, `trust_score` (red de confianza), `compare_relays` y `event_locations` (propagación entre relés), `review_interactions` (bots), `draft_reaction` / `draft_reply`, una comprobación rápida del firmador antes de preguntarte, `retry_publish`, `nostrclaw doctor` y análisis en varios relés a la vez.
+4. Ideas, sin empezar: borrar tus propias notas (NIP-09), publicar el paquete en npm.
 
 ## Licencia
 
