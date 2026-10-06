@@ -10,6 +10,7 @@ import { createSigningContext, registerSigningTools, type SigningContext } from 
 import { coverage, eventsPerHour, isStoredKind } from './compare.js'
 import { cleanText, resolveRelay, toHexPubkey, UNTRUSTED_NOTE } from './safety.js'
 import { NO_FACTS, pickCandidates, triage, WEIGHTS, type AuthorFacts } from './triage.js'
+import { engagersOf, ESTABLISHED_FOLLOWERS, followedBySeeds, followersOf, newestPerAuthor, scoreTrust, TRUST_WEIGHTS } from './trust.js'
 
 export const INSTRUCTIONS = [
   'nostrclaw lets you analyse a Nostr relay: its public information and statistics, its recent events, and the activity of an author.',
@@ -399,6 +400,92 @@ export function createServer(cfg: Config, api: NostrApi = realApi, clock: () => 
       relays,
       caveats: 'hasTheReferenceEvents = how many of the reference relay\'s recent events are held by that relay: a relay may lack one for many reasons (never sent, policy, expiry, deletion), so it is an observation, not a diagnosis. eventsPerHour of a truncated sample is computed from the span it covers. Ephemeral events are ignored (relays do not store them).',
       note: UNTRUSTED_NOTE,
+    }
+  }))
+
+  server.registerTool('trust_score', {
+    title: 'Trust score for keys',
+    description: 'Scores how much the network vouches for keys, using what the configured relays hold about who follows whom: how many keys follow it, how many of those followers are themselves followed (established), how close it is to keys YOU trust (pass them as `trusted`: a trusted key following it counts most), how many different keys interacted with it, and how long it has been seen. Give `pubkeys`, or leave them out to examine the NEW keys of a recent window (keys not seen on any relay before it). A web-of-trust aid, not a verdict or an identity check: keys can follow each other in rings, and "unknown" means nothing vouches for it here, not that it is bad.',
+    inputSchema: {
+      pubkeys: z.array(z.string()).min(1).max(10).optional().describe('Keys to score (hex or npub). Omit to take the new keys of the last `recentHours` seen on the FIRST relay and not seen before on any of the relays.'),
+      trusted: z.array(z.string()).max(10).optional().describe('Keys you trust (hex or npub), e.g. your own. Without them the "close to a trusted key" points are not available.'),
+      recentHours: hoursParam(48, 24 * 30).describe('When no pubkeys are given: the window in which a key must have appeared for the first time (default 48).'),
+      relays: z.array(z.string()).min(1).max(8).optional().describe('Relays to read from; each must be configured. Default: all configured. The first one is where new keys are looked for.'),
+    },
+    annotations: READ_ONLY,
+  }, guard(async (a: { pubkeys?: string[]; trusted?: string[]; recentHours: number; relays?: string[] }) => {
+    const urls = [...new Set((a.relays?.length ? a.relays : cfg.relays).map((r) => resolveRelay(r, cfg)))]
+    const now = clock()
+    const decode = (x: string) => toHexPubkey(x, (v) => { try { const d = nip19.decode(v); return d.type === 'npub' ? d.data : null } catch { return null } })
+    const trusted = [...new Set((a.trusted ?? []).map(decode))]
+    let incomplete = false
+    /** The same question to every relay; answers merged and de-duplicated. A relay that fails is skipped (and noted). */
+    const askAll = async (filter: Filter, max: number): Promise<Event[]> => {
+      const rs = await Promise.allSettled(urls.map((u) => query(u, filter, max)))
+      const seen = new Map<string, Event>()
+      for (const r of rs) { if (r.status === 'rejected' || !r.value.eose) incomplete = true; if (r.status === 'fulfilled') for (const e of r.value.events) seen.set(e.id, e) }
+      return [...seen.values()]
+    }
+    const chunks = <T>(xs: T[], n: number): T[][] => { const o: T[][] = []; for (let i = 0; i < xs.length; i += n) o.push(xs.slice(i, i + n)); return o }
+    const oldestOf = (events: Event[]): Map<string, number> => {
+      const m = new Map<string, number>()
+      for (const e of events) m.set(e.pubkey, Math.min(m.get(e.pubkey) ?? Infinity, e.created_at))
+      return m
+    }
+
+    // which keys: given, or the NEW ones of the window (their oldest known event is inside it)
+    let keys: string[], discovered = false, ownEvents: Event[] = []
+    const since = Math.floor(now - a.recentHours * 3600)
+    if (a.pubkeys?.length) keys = [...new Set(a.pubkeys.map(decode))]
+    else {
+      discovered = true
+      // candidates come from the FIRST relay only (normally yours): a busy public relay's newest events are seconds old and would flood the list with strangers.
+      // Whether a candidate is really new is then judged across all the relays.
+      const recent = (await query(urls[0]!, { since, limit: Math.min(400, cfg.maxEvents) }, Math.min(400, cfg.maxEvents))).events.filter((e) => isStoredKind(e.kind))
+      const candidates = [...new Set(recent.sort((x, y) => y.created_at - x.created_at).map((e) => e.pubkey))].slice(0, 40)
+      const ages = oldestOf((await Promise.all(chunks(candidates, 5).map((c) => askAll({ authors: c, limit: 500 }, 500)))).flat())
+      keys = candidates.filter((k) => (ages.get(k) ?? now) >= since).slice(0, 10)
+    }
+    if (!keys.length) return { relays: urls, discovered, examined: 0, note: 'No keys to score: no key appeared for the first time in the window.' }
+
+    const perChunk = await Promise.all(chunks(keys, 5).map(async (c) => ({
+      follows: await askAll({ kinds: [3], '#p': c, limit: 500 }, 500),
+      engage: await askAll({ kinds: [1, 6, 7, 16], '#p': c, limit: 500 }, 500),
+      own: await askAll({ authors: c, limit: 500 }, 500),
+      profiles: await askAll({ kinds: [0], authors: c, limit: 100 }, 100), // not among the newest 500 events of a busy author
+    })))
+    const follows = perChunk.flatMap((c) => c.follows), engage = perChunk.flatMap((c) => c.engage); ownEvents = perChunk.flatMap((c) => c.own); const profileEvents = perChunk.flatMap((c) => c.profiles)
+    const followers = followersOf(follows, keys)
+    // second level: how many keys follow each follower (bounded)
+    const followerUnion = [...new Set([...followers.values()].flatMap((s) => [...s]))].slice(0, 200)
+    const second = (await Promise.all(chunks(followerUnion, 50).map((c) => askAll({ kinds: [3], '#p': c, limit: 500 }, 500)))).flat()
+    const followersOfFollowers = followersOf(second, followerUnion)
+    // the trusted keys' follow lists
+    const seedLists = trusted.length ? await askAll({ kinds: [3], authors: trusted, limit: 50 }, 50) : []
+    const followedByTrusted = followedBySeeds(seedLists, trusted)
+    const oldest = oldestOf(ownEvents)
+    const profiles = newestPerAuthor(profileEvents)
+
+    const out = keys.map((pk) => {
+      const fs = followers.get(pk) ?? new Set<string>()
+      const established = [...fs].filter((f) => (followersOfFollowers.get(f)?.size ?? 0) >= ESTABLISHED_FOLLOWERS).length
+      const seedDistance = trusted.includes(pk) ? 0 as const : followedByTrusted.has(pk) ? 1 as const : [...fs].some((f) => followedByTrusted.has(f)) ? 2 as const : undefined
+      const facts = { followers: fs.size, establishedFollowers: established, seedDistance, engagers: engagersOf(engage, pk), oldestSeen: oldest.get(pk), hasProfile: profiles.has(pk), now }
+      const sc = scoreTrust(facts)
+      return { pubkey: pk, npub: nip19.npubEncode(pk), ...sc, facts: { ...facts, now: undefined, oldestSeen: facts.oldestSeen ? new Date(facts.oldestSeen * 1000).toISOString() : undefined } }
+    }).sort((x, y) => y.score - x.score)
+    const byLevel = { established: 0, some: 0, unknown: 0 }
+    for (const o of out) byLevel[o.level]++
+    return {
+      relays: urls, discovered, windowHours: discovered ? a.recentHours : undefined, examined: out.length, byLevel,
+      trustedKeysGiven: trusted.length, incomplete: incomplete || undefined,
+      keys: out, weights: TRUST_WEIGHTS,
+      caveats: [
+        'Follower counts are lower bounds: they come only from the follow lists these relays hold, and a key may be followed widely elsewhere.',
+        'Keys can follow each other in rings: the points that are hardest to fake (followers that are themselves followed, closeness to your trusted keys) weigh most.',
+        trusted.length ? undefined : 'No trusted keys were given, so the closeness-to-a-trusted-key points are unavailable: pass your own key in `trusted` for a much stronger signal.',
+        '"oldest seen" is the oldest of the newest ~500 events read per group of keys, not the key\'s real age. "unknown" means nothing vouches for the key on these relays, not that it is bad.',
+      ].filter(Boolean),
     }
   }))
 
