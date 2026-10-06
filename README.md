@@ -37,8 +37,8 @@ Then ask Claude things like *“Audit my relay”*, *“What is the traffic of t
 | `count_events` | NIP-45 `COUNT` without downloading anything, with a clear message if unsupported |
 | `activity_report` | Analysis of a sample: counts by kind, events per hour, top authors, the same text from several keys, bursts from one key, share of single-event authors, and a short list of signals |
 | `author_report` | One key: profile (kind 0), follows, relay list, activity on this relay |
-| `account_triage` | Ranks the authors of a window by how much they look like throw-away or abusive keys; every point of the score has a stated reason (no profile / follows / relay list on this relay, text shared with other keys — near-copies included —, bursts, link-only posting). A triage aid, not a verdict |
-| `event_engagement` | One event: replies, reactions, reposts and zaps (NIP-45 COUNT, or a sample if the relay can't), reaction breakdown and distinct reactors |
+| `account_triage` | Lists the authors of a window whose *behaviour* looks like spam (text shared with other keys — near-copies included —, bursts, link-only posting), each point with a stated reason. Missing profile/follows/relay list on this relay adds to the score but never flags a key on its own; keys with no behaviour signal are only counted. A triage aid, not a verdict |
+| `event_engagement` | One event: replies, reactions, reposts and zaps, counted from the events that reference it (up to 500; NIP-45 COUNT with tag filters answers a silent 0 on khatru+sqlite, so it is not used), reaction breakdown and distinct reactors |
 
 `recent_events`, `count_events` and `activity_report` also accept a `tags` filter (`{"e": [id]}`, `{"p": [pubkey]}`, `{"t": ["bitcoin"]}`).
 

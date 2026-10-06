@@ -21,6 +21,8 @@ export type Level = 'low' | 'medium' | 'high'
 export interface AuthorTriage {
   pubkey: string
   score: number
+  /** Points that come from what the key DID (not from missing data). */
+  behaviour: number
   level: Level
   reasons: string[]
   events: number
@@ -50,8 +52,12 @@ export interface TriageInput {
 export interface TriageResult {
   examined: number
   notExamined: number
+  /** Levels of the listed authors only; the quiet ones are always low. */
   byLevel: Record<Level, number>
+  /** Authors with a behaviour signal (shared text, burst, link-only), highest score first. */
   authors: AuthorTriage[]
+  /** Authors whose only "evidence" is missing data on this relay (no profile, a single event…): counted, not listed. */
+  quiet: { count: number; byKind: Record<string, number>; note: string }
 }
 
 /** Scores every author in `facts` using the whole sample (shared text and bursts need the other authors). */
@@ -69,8 +75,8 @@ export function triage({ events, facts }: TriageInput, top = 15): TriageResult {
     const list = byAuthor.get(pubkey)
     if (!list?.length) continue
     const reasons: string[] = []
-    let score = 0
-    const add = (points: number, why: string) => { score += points; reasons.push(`${points > 0 ? '+' : ''}${points} ${why}`) }
+    let score = 0, behaviour = 0
+    const add = (points: number, why: string, isBehaviour = false) => { score += points; if (isBehaviour) behaviour += points; reasons.push(`${points > 0 ? '+' : ''}${points} ${why}`) }
 
     if (!f.hasProfile) add(WEIGHTS.noProfile, 'no profile (kind 0) on this relay')
     if (f.follows === 0) add(WEIGHTS.noFollows, 'no follow list on this relay')
@@ -78,10 +84,10 @@ export function triage({ events, facts }: TriageInput, top = 15): TriageResult {
     if (list.length === 1) add(WEIGHTS.singleEvent, 'a single event in the window')
     const text = list.filter((e) => textual.includes(e))
     const shared = text.filter((e) => sharedIds.has(e.id))
-    if (text.length && shared.length / text.length >= 0.5) add(WEIGHTS.sharedText, `${shared.length} of ${text.length} texts are also posted by other keys`)
+    if (text.length && shared.length / text.length >= 0.5) add(WEIGHTS.sharedText, `${shared.length} of ${text.length} texts are also posted by other keys`, true)
     const b = burstOf(list.map((e) => e.created_at), 60)
-    if (b.events >= 5) add(WEIGHTS.burst, `${b.events} events within ${b.seconds} s`)
-    if (text.length >= 2 && !f.hasProfile && text.filter((e) => LINK.test(e.content)).length / text.length >= 0.8) add(WEIGHTS.linksOnly, 'almost every text carries a link and there is no profile')
+    if (b.events >= 5) add(WEIGHTS.burst, `${b.events} events within ${b.seconds} s`, true)
+    if (text.length >= 2 && !f.hasProfile && text.filter((e) => LINK.test(e.content)).length / text.length >= 0.8) add(WEIGHTS.linksOnly, 'almost every text carries a link and there is no profile', true)
     if (f.hasNip05) add(WEIGHTS.hasNip05, 'the profile declares a NIP-05 identifier (not verified)')
     if (f.follows >= 20) add(WEIGHTS.manyFollows, `follows ${f.follows} keys`)
 
@@ -89,12 +95,20 @@ export function triage({ events, facts }: TriageInput, top = 15): TriageResult {
     const kinds: Record<string, number> = {}
     for (const e of list) kinds[`${e.kind} ${kindName(e.kind)}`] = (kinds[`${e.kind} ${kindName(e.kind)}`] ?? 0) + 1
     const t = list.map((e) => e.created_at)
-    authors.push({ pubkey, score, level: levelOf(score), reasons, events: list.length, kinds, first: iso(Math.min(...t)), last: iso(Math.max(...t)), facts: f })
+    // missing data is not evidence by itself: on a relay full of throw-away keys everyone lacks a profile, so without a behaviour signal the level stays low
+    const level = behaviour > 0 ? levelOf(score) : 'low'
+    authors.push({ pubkey, score, level, behaviour, reasons, events: list.length, kinds, first: iso(Math.min(...t)), last: iso(Math.max(...t)), facts: f })
   }
-  authors.sort((a, b) => b.score - a.score || b.events - a.events)
+  const flagged = authors.filter((a) => a.behaviour > 0).sort((a, b) => b.score - a.score || b.events - a.events)
+  const quietList = authors.filter((a) => a.behaviour === 0)
   const byLevel: Record<Level, number> = { low: 0, medium: 0, high: 0 }
-  for (const a of authors) byLevel[a.level]++
-  return { examined: authors.length, notExamined: byAuthor.size - authors.length, byLevel, authors: authors.slice(0, top) }
+  for (const a of flagged) byLevel[a.level]++
+  const byKind: Record<string, number> = {}
+  for (const a of quietList) for (const [k, n] of Object.entries(a.kinds)) byKind[k] = (byKind[k] ?? 0) + n
+  return {
+    examined: authors.length, notExamined: byAuthor.size - authors.length, byLevel, authors: flagged.slice(0, top),
+    quiet: { count: quietList.length, byKind, note: 'No behaviour signal (no shared text, burst or link-only posting). Missing profile/follows/relay list on this relay is common for throw-away keys and is not treated as evidence by itself.' },
+  }
 }
 
 /**

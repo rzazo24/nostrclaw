@@ -242,9 +242,9 @@ describe('account_triage', () => {
     const r = await call(client, 'account_triage', { hours: 6, sampleLimit: 100, top: 10 })
     expect(r.json.authors[0]).toMatchObject({ pubkey: spammer.pk, level: 'high' })
     expect(r.json.authors[0].reasons.join(' ')).toMatch(/no profile.*also posted by other keys.*within.*link/)
-    const f = r.json.authors.find((a: { pubkey: string }) => a.pubkey === friend.pk)
-    expect(f).toMatchObject({ level: 'low', score: 0, onThisRelay: { profile: true, nip05Field: true, follows: 30, relayList: true } })
-    expect(r.json.untrusted.profileNames[friend.pk]).toBe('Frida')
+    expect(r.json.authors[0].onThisRelay).toEqual({ profile: false, nip05Field: false, follows: 0, relayList: false })
+    expect(r.json.quiet.count).toBe(1) // the friend has no behaviour signal: counted, not listed
+    expect(r.json.authors.some((a: { pubkey: string }) => a.pubkey === friend.pk)).toBe(false)
     expect(JSON.stringify({ ...r.json, untrusted: undefined })).not.toContain('Frida') // names never outside "untrusted"
     expect(r.json.scoringWeights.noProfile).toBe(25)
     expect(r.json.caveats).toMatch(/THIS relay/)
@@ -254,34 +254,41 @@ describe('account_triage', () => {
 
 describe('event_engagement', () => {
   const id = 'ab'.repeat(32)
-  it('counts replies, reactions, reposts and zaps with COUNT and breaks the reactions down', async () => {
+  it('counts replies, reactions, reposts and zaps from the referencing events, and breaks the reactions down', async () => {
     const author = key(), fan = key(), other = key()
     const target = ev(author, 1, 'a note people liked', NOW - 100)
-    const reactions = [ev(fan, 7, '+', NOW - 90), ev(other, 7, '+', NOW - 80), ev(author, 7, '❤️', NOW - 70), ev(fan, 7, '🔥', NOW - 60)]
-    const counted: unknown[] = []
+    const refs = [
+      ev(fan, 7, '+', NOW - 90, [['e', target.id]]), ev(other, 7, '+', NOW - 80, [['e', target.id]]), ev(author, 7, '❤️', NOW - 70, [['e', target.id]]), ev(fan, 7, '🔥', NOW - 60, [['e', target.id]]),
+      ev(other, 1, 'reply 1', NOW - 50, [['e', target.id]]), ev(fan, 1, 'reply 2', NOW - 40, [['e', target.id]]), ev(fan, 6, '', NOW - 30, [['e', target.id]]), ev(other, 9735, '', NOW - 20, [['e', target.id]]),
+    ]
+    let counted = 0
     const { client } = await setup({
-      async query(_r, f) { const x = f as { ids?: string[]; kinds?: number[] }; return { events: x.ids ? [target] : x.kinds?.includes(7) ? reactions : [], eose: true, notices: [], invalid: 0, ms: 1 } },
-      async count(_r, f) { counted.push(f); const k = (f as { kinds: number[] }).kinds[0]!; return { count: { 1: 3, 7: 4, 6: 2, 9735: 1 }[k] ?? 0, ms: 1 } },
+      async query(_r, f) { const x = f as { ids?: string[] }; return { events: x.ids ? [target] : refs, eose: true, notices: [], invalid: 0, ms: 1 } },
+      async count() { counted++; return { count: 0, ms: 1 } }, // a COUNT that lies with tag filters must not be believed
     })
     const r = await call(client, 'event_engagement', { id: target.id })
-    expect(r.json).toMatchObject({ foundOnThisRelay: true, counts: { replies: 3, reactions: 4, reposts: 2, zaps: 1 }, countedBy: 'NIP-45 COUNT' })
+    expect(r.json).toMatchObject({ foundOnThisRelay: true, counts: { replies: 2, reactions: 4, reposts: 1, zaps: 1 } })
+    expect(r.json.countedBy).toMatch(/8 events that reference it/)
+    expect(r.json.countsAreApproximate).toBeUndefined()
     expect(r.json.reactions).toMatchObject({ distinctPeople: 3, reactedToOwnEvent: true })
     expect(r.json.reactions.byContent[0]).toEqual({ content: '+', n: 2 })
     expect(r.json.untrusted.event.content).toBe('a note people liked')
-    expect(counted).toHaveLength(4)
-    expect(counted[0]).toMatchObject({ kinds: [1], '#e': [target.id] })
+    expect(counted).toBe(0)
   })
-  it('falls back to counting a sample when the relay cannot COUNT, and accepts note1 ids', async () => {
+  it('ignores events the relay returns that do not really reference the id, and accepts note1 ids', async () => {
     const author = key(), a = key()
     const target = ev(author, 1, 'hello', NOW - 10)
-    const referencing = [ev(a, 7, '+', NOW - 5), ev(a, 1, 'a reply', NOW - 4), ev(key(), 6, '', NOW - 3)]
-    const { client } = await setup({
-      async query(_r, f) { const x = f as { ids?: string[] }; return { events: x.ids ? [target] : referencing, eose: true, notices: [], invalid: 0, ms: 1 } },
-      async count() { return { count: null, reason: 'unsupported', ms: 1 } },
-    })
+    const refs = [ev(a, 7, '+', NOW - 5, [['e', target.id]]), ev(a, 7, '+', NOW - 4, [['e', 'cd'.repeat(32)]])]
+    const { client } = await setup({ async query(_r, f) { const x = f as { ids?: string[] }; return { events: x.ids ? [target] : refs, eose: true, notices: [], invalid: 0, ms: 1 } } })
     const r = await call(client, 'event_engagement', { id: nip19.noteEncode(target.id) })
-    expect(r.json.counts).toEqual({ replies: 1, reactions: 1, reposts: 1, zaps: 0 })
-    expect(r.json.countedBy).toMatch(/does not answer COUNT/)
+    expect(r.json.counts).toEqual({ replies: 0, reactions: 1, reposts: 0, zaps: 0 })
+  })
+  it('marks the numbers as approximate when the sample limit is reached', async () => {
+    const a = key(), target = ev(a, 1, 'popular', NOW - 10)
+    const refs = Array.from({ length: 500 }, (_, i) => ev(key(), 7, '+', NOW - i, [['e', target.id]]))
+    const { client } = await setup({ async query(_r, f) { const x = f as { ids?: string[] }; return { events: x.ids ? [target] : refs, eose: true, notices: [], invalid: 0, ms: 1 } } })
+    const r = await call(client, 'event_engagement', { id: target.id })
+    expect(r.json).toMatchObject({ countsAreApproximate: true }); expect(r.json.countedBy).toMatch(/real numbers may be higher/)
   })
   it('says when the event is not on this relay, and rejects bad ids', async () => {
     const { client } = await setup({ async query() { return { events: [], eose: true, notices: [], invalid: 0, ms: 1 } } })

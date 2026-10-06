@@ -230,7 +230,7 @@ export function createServer(cfg: Config, api: NostrApi = realApi, clock: () => 
 
   server.registerTool('account_triage', {
     title: 'Account triage',
-    description: 'Ranks the authors seen in a recent window by how much they look like throw-away or abusive keys, with the reason for every point of the score: no profile / follow list / relay list on this relay, the same text posted by other keys (also near-copies), bursts, link-only posting; established signs lower it. It looks up the profile, follow list and relay list of the most suspicious candidates. A triage aid, not a verdict: absence of data on this relay does not mean the account is new elsewhere.',
+    description: 'Lists the authors seen in a recent window whose BEHAVIOUR looks like spam or abuse (the same text posted by other keys — near-copies included —, bursts, link-only posting), highest score first, with the reason for every point; missing profile / follow list / relay list on this relay adds to the score but never flags an author on its own. Authors with no behaviour signal are only counted ("quiet"). Established signs lower the score. It looks up the profile, follow list and relay list of the most suspicious candidates. A triage aid, not a verdict: absence of data on this relay does not mean the account is new elsewhere.',
     inputSchema: {
       relay: relayParam, kinds: kindsParam,
       hours: hoursParam(24, 24 * 30).describe('Time window in hours (default 24).'),
@@ -268,9 +268,9 @@ export function createServer(cfg: Config, api: NostrApi = realApi, clock: () => 
       relay: url, windowHours: a.hours, ...queryNote(sample),
       sample: { events: events.length, authors: result.examined + result.notExamined, isTruncated: truncated },
       truncationNote: truncated ? `The relay returned ${limit} events, the newest in the window; there are probably more.` : undefined,
-      examined: result.examined, notExamined: result.notExamined, byLevel: result.byLevel,
+      examined: result.examined, notExamined: result.notExamined, flagged: result.byLevel, quiet: result.quiet,
       lookupsIncomplete: looked.some((r) => !r.eose) || undefined,
-      authors: result.authors.map((x) => ({ pubkey: x.pubkey, npub: nip19.npubEncode(x.pubkey), score: x.score, level: x.level, reasons: x.reasons, events: x.events, kinds: x.kinds, first: x.first, last: x.last, onThisRelay: { profile: x.facts.hasProfile, nip05Field: x.facts.hasNip05, follows: x.facts.follows, relayList: x.facts.hasRelayList } })),
+      authors: result.authors.map((x) => ({ pubkey: x.pubkey, npub: nip19.npubEncode(x.pubkey), score: x.score, behaviourPoints: x.behaviour, level: x.level, reasons: x.reasons, events: x.events, kinds: x.kinds, first: x.first, last: x.last, onThisRelay: { profile: x.facts.hasProfile, nip05Field: x.facts.hasNip05, follows: x.facts.follows, relayList: x.facts.hasRelayList } })),
       scoringWeights: WEIGHTS,
       caveats: 'Profile, follow list and relay list are only what THIS relay holds. A NIP-05 field is not verified. The score is meant to decide where to look first.',
       untrusted: { profileNames: Object.fromEntries(result.authors.flatMap((x) => (names.has(x.pubkey) ? [[x.pubkey, cleanText(names.get(x.pubkey), 60)]] : []))) },
@@ -280,7 +280,7 @@ export function createServer(cfg: Config, api: NostrApi = realApi, clock: () => 
 
   server.registerTool('event_engagement', {
     title: 'Event engagement',
-    description: 'For one event: the event itself and how much happened around it on this relay — replies, reactions, reposts and zaps (counted with NIP-45 when the relay supports it, otherwise from a sample), with a breakdown of what the reactions are and how many different people reacted.',
+    description: 'For one event: the event itself and how much happened around it on this relay — replies, reactions, reposts and zaps (counted from the events that reference it, up to 500), with a breakdown of what the reactions are and how many different people reacted.',
     inputSchema: { relay: relayParam, id: z.string().describe('The event id: 64-character hex, or a note1… / nevent1… string.') },
     annotations: READ_ONLY,
   }, guard(async (a: { relay?: string; id: string }) => {
@@ -290,29 +290,21 @@ export function createServer(cfg: Config, api: NostrApi = realApi, clock: () => 
       try { const d = nip19.decode(id); id = (d.type === 'note' ? d.data : d.type === 'nevent' ? d.data.id : '') } catch { id = '' }
     }
     if (!/^[0-9a-f]{64}$/.test(id)) throw new Error('not a valid event id (use 64-character hex, note1… or nevent1…)')
-    const refs = (kinds: number[]): Filter => ({ kinds, '#e': [id] })
-    const [found, replies, reactions, reposts, zaps, sample] = await Promise.all([
-      query(url, { ids: [id], limit: 1 }, 1),
-      api.count(url, refs([1]), opts), api.count(url, refs([7]), opts), api.count(url, refs([6, 16]), opts), api.count(url, refs([9735]), opts),
-      query(url, { kinds: [7], '#e': [id], limit: 200 }, 200),
-    ])
-    const counts = { replies: replies.count, reactions: reactions.count, reposts: reposts.count, zaps: zaps.count }
-    let source = 'NIP-45 COUNT'
-    let approximate = false
-    if (Object.values(counts).some((c) => c === null)) {
-      // the relay cannot COUNT: tally a sample of everything that references the event
-      const refd = await query(url, { '#e': [id], limit: 500 }, 500)
-      const tally = (ks: number[]) => refd.events.filter((e) => ks.includes(e.kind)).length
-      Object.assign(counts, { replies: tally([1]), reactions: tally([7]), reposts: tally([6, 16]), zaps: tally([9735]) })
-      source = `a sample of up to 500 events that reference it (the relay does not answer COUNT)`
-      approximate = refd.events.length >= 500
-    }
+    // Counted from the events themselves, not with NIP-45 COUNT: the relay's COUNT with a tag filter answers 0 even when matching events exist
+    // (seen on khatru + sqlite), and a silent wrong zero is worse than an approximate number.
+    const MAX = 500
+    const [found, refd] = await Promise.all([query(url, { ids: [id], limit: 1 }, 1), query(url, { '#e': [id], limit: MAX }, MAX)])
+    const tally = (ks: number[]) => refd.events.filter((e) => e.kind !== undefined && ks.includes(e.kind) && e.tags.some((t) => t[0] === 'e' && t[1] === id)).length
+    const counts = { replies: tally([1]), reactions: tally([7]), reposts: tally([6, 16]), zaps: tally([9735]) }
+    const approximate = refd.events.length >= MAX
+    const source = `the ${refd.events.length} events that reference it${approximate ? ' (the limit was reached: real numbers may be higher)' : ''}`
+    const sample = { events: refd.events.filter((e) => e.kind === 7) }
     const mix = new Map<string, number>()
     const people = new Set<string>()
     for (const e of sample.events) { const k = cleanText(e.content.trim() || '+', 12); mix.set(k, (mix.get(k) ?? 0) + 1); people.add(e.pubkey) }
     const target: Event | undefined = found.events[0]
     return {
-      relay: url, id, foundOnThisRelay: !!target, counts, countedBy: source, countsAreApproximate: approximate || undefined,
+      relay: url, id, foundOnThisRelay: !!target, counts, countedBy: source, countsAreApproximate: approximate || undefined, incomplete: !refd.eose || undefined,
       reactions: { distinctPeople: people.size, sampleSize: sample.events.length, byContent: [...mix.entries()].sort((x, y) => y[1] - x[1]).slice(0, 8).map(([content, n]) => ({ content, n })), reactedToOwnEvent: target ? sample.events.some((e) => e.pubkey === target.pubkey) : undefined },
       untrusted: { event: target ? viewEvent(target, now, 400) : undefined },
       note: UNTRUSTED_NOTE,
