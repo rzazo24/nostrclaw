@@ -54,6 +54,7 @@ How it stays under your control:
 
 - **Your key never leaves your signer.** nostrclaw holds only an app key that identifies it to the signer, saved with mode `0600`.
 - **A human decides, through a channel the model cannot write to.** If your client supports it, `publish_event` asks *you* (MCP elicitation) showing the exact event, who signs it and where it goes; without an explicit yes nothing is signed. Your signer then asks for its own approval.
+- **Use manual approval in the signer** (Clave: *low trust*). If the signer approves by itself, anything that can read the app key saved on your machine — including an assistant with a shell — could ask it for signatures with no prompt; nostrclaw warns when it sees that.
 - **“Always allow” is detected.** Without elicitation, the signer's approval is the lock — so it is verified: a signature that comes back faster than a person could decide (default 2 s) is **discarded and never published**, and further publishing is refused until you fix the signer and reconnect.
 - **Policy you own** (`~/.config/nostrclaw/policy.json`, no tool can write it): allowed kinds (default notes `1` and reactions `7` only), publications per hour (default 5), maximum length, relays, and blocked patterns (anything that looks like an `nsec1…`, `bunker://`, `secret=`…). An invalid file stops the server.
 - **The model cannot alter or replay anything:** `publish_event` takes only a draft id; the signed event is checked against the draft and goes only to the relays, never back into the conversation.

@@ -171,7 +171,14 @@ export function registerSigningTools(server: McpServer, cfg: Config, api: NostrA
       audit.log({ step: 'discarded-auto-approval', draftId, eventId: signed.id, kind: t.kind, signMs: ms })
       throw new Error(`the signer returned the signature in ${ms} ms, faster than a person can decide, so it seems to approve automatically. The signed event was discarded and NOT published. Turn off "always allow" in the signer and reconnect, or use a client that can ask the user to confirm`)
     }
-    audit.log({ step: 'signed', draftId, eventId: signed.id, kind: t.kind, signMs: ms, approval })
+    // With elicitation an instant signer is acceptable (the human decided in the client), but it is worth saying out loud: a signer that approves
+    // by itself also approves requests that do not come through this tool, for anything that can read the saved app key.
+    const warnings: string[] = []
+    if (ms < policy.minHumanApprovalMs) {
+      signer.autoApprovalSuspected = true
+      warnings.push(`The signer answered in ${ms} ms, faster than a person can decide, so it seems to approve automatically (for example Clave's "medium trust"). The confirmation you just gave protects publishing through this tool, but anything that can read the app key saved on this machine could ask that signer for signatures with no prompt at all. Prefer "low trust" (manual approval) in the signer.`)
+    }
+    audit.log({ step: 'signed', draftId, eventId: signed.id, kind: t.kind, signMs: ms, approval, detail: warnings.length ? 'signer approved faster than a person' : undefined })
 
     // 4) publication
     const results: Record<string, string> = {}
@@ -186,6 +193,6 @@ export function registerSigningTools(server: McpServer, cfg: Config, api: NostrA
     audit.log({ step: accepted ? 'published' : 'refused', draftId, eventId: signed.id, kind: t.kind, contentHash: draft.hash, relays: results, approval, signMs: ms })
     if (!accepted) throw new Error(`no relay accepted the event: ${JSON.stringify(results)}`)
     drafts.delete(draftId)
-    return { published: true, eventId: signed.id, noteId: nip19.noteEncode(signed.id), signedAs: npub(), relays: results, approval, signerMs: ms }
+    return { published: true, eventId: signed.id, noteId: nip19.noteEncode(signed.id), signedAs: npub(), relays: results, approval, signerMs: ms, warnings: warnings.length ? warnings : undefined }
   }))
 }

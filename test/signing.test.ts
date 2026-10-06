@@ -169,7 +169,13 @@ describe.skipIf(!bin)('signing (real relay + pretend NIP-46 signer)', () => {
 
   it('with elicitation, an instant signer is fine: the human already decided in the client', async () => {
     const s = await setup({ signer: { delayMs: 0 }, elicit: yes })
-    expect((await s.publishNote('confirmed in the client')).published!.json).toMatchObject({ published: true, approval: 'elicitation' })
+    const r = (await s.publishNote('confirmed in the client')).published!.json
+    expect(r).toMatchObject({ published: true, approval: 'elicitation' })
+    expect(r.warnings[0]).toMatch(/seems to approve automatically.*low trust/s) // allowed, but said out loud
+    expect((await call(s.client, 'signer_status')).json.autoApprovalSuspected).toBe(true)
+    // a person-speed signer gets no warning
+    const slow = await setup({ signer: { delayMs: 800 }, elicit: yes })
+    expect((await slow.publishNote('with a human in Clave')).published!.json.warnings).toBeUndefined()
   })
 
   it('publishes nothing when the signer rejects, or never answers', async () => {

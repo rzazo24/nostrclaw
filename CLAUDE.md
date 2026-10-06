@@ -25,7 +25,8 @@ RELAY_BIN=../nostr-relay-khatru/nostr-relay-khatru npm test   # includes the end
   registered only when signing is enabled. **Signing rules** (tests in `test/signing.test.ts` guard each): the user's key is never in this process; a human decision
   comes through MCP elicitation (a channel the model cannot write to) or, without it, a signer that took human time (a too-fast signature is discarded and never
   published); `publish_event` takes only a draft id; the signed event never goes back into tool output; `policy.json` is user-owned and read-only to every tool,
-  and an invalid one stops the server; no secrets or content in the audit log. Do not add an auto-approve mode.
+  and an invalid one stops the server; no secrets or content in the audit log. Do not add an auto-approve mode. Known limit: a model with a shell can read the saved
+  app key, so only the signer's manual approval protects against it (docs/signing-design.md, "Known limitation").
 - **Relays are an allowlist** (`NOSTRCLAW_RELAYS`), the private-address guard applies to the default relay too, redirects are not followed.
 - Verify signatures on every event fetched; keep output bounded.
 

@@ -25,7 +25,7 @@ reads a public network can be talked into things.
 | **Prompt injection through event content** — a stranger's note says "publish this link from your account" | The assistant reads hostile text all day | Reading and writing tools are separate; every publication needs a human confirmation the model cannot give itself; event text stays fenced under `untrusted` |
 | The model is mistaken or over-eager | Publishing is public and not really undoable | Draft → preview → confirm; a small allowlist of kinds; a rate limit |
 | **A signer set to "always approve"** | It removes the signer as a second lock | Per-kind permissions only; a signature that comes back too fast to be human is **discarded, not published** (below) |
-| Stolen app key | Lets an attacker *request* signatures | The app key only authorises requests; each approval is made in the signer with limited permissions, and can be revoked there |
+| Stolen app key — **including by the model itself** | The app key is saved on this machine (mode `0600`), and an assistant with shell access runs as the same user: it could read it and ask the signer for signatures directly, bypassing this server and its confirmation question | **Only the signer's own approval protects against this.** Use the signer's *manual* approval (Clave: **low trust**); never a level that auto-approves kinds 1/6/7. nostrclaw detects a signer that answers faster than a person and warns, but it cannot stop a process that talks to the signer by itself. Each approval is made in the signer with limited permissions and can be revoked there |
 | Secrets in logs or tool output | | `secret=` and URIs are never logged; the audit log stores ids and hashes; content is checked against `blockedPatterns` (`nsec1…`, `bunker://`, …) |
 | Malicious relay answers | | Same fences as 0.1: allowlist, size limits, signature checks |
 
@@ -99,6 +99,12 @@ event id, kind, content hash, relays and result. No content, no secrets, no URIs
   event is discarded and not published; a tampered signature or a changed event is not published.
 - The real stdio test keeps asserting that nothing but protocol touches stdout.
 - A manual test with the real Clave on the iPhone before declaring 0.2 done.
+
+## Known limitation
+
+The confirmation question (MCP elicitation) controls publishing **through nostrclaw's tools**. It cannot control a model that has a shell and reads the saved app
+key. That is why the signer's manual approval matters and why nostrclaw says so when it sees an automatic one. If this ever needs to be stronger, the
+options are: keep the app key out of the user's reach (a separate OS user or the system keychain), or run the signing tools in a client without shell access.
 
 ## Open questions
 
