@@ -511,7 +511,7 @@ export function createServer(cfg: Config, api: NostrApi = realApi, clock: () => 
 
   server.registerTool('review_interactions', {
     title: 'Review who interacts with a note',
-    description: 'For one note: who replied to it, reacted to it or reposted it on the configured relays, and for each distinct person a verdict — likely-bot, suspicious, unknown or established — that combines what the key DOES (the same text posted again and again, links in most of its notes, bursts) with its web-of-trust score. Behaviour outweighs trust: a spam bot can be followed by other bots and still look "somewhat trusted". Replies are examined first. A triage aid, not a verdict; give your own key in `trusted` for a much better signal.',
+    description: 'For one note: who replied to it, reacted to it or reposted it on the configured relays, and for each distinct person a verdict — promotional-bot, automated, suspicious, unknown or established — that combines what the key DOES (above all what it says to OTHER people: the same text or links in its answers to strangers; also the same text again and again, links in most notes, bursts) with its web-of-trust score. Behaviour outweighs trust: a spam bot can be followed by other bots and still look "somewhat trusted". "automated" is a bot that publishes in bulk or periodically but does not push the same advert at strangers; "promotional-bot" does. Replies are examined first. A triage aid, not a verdict; give your own key in `trusted` for a much better signal.',
     inputSchema: {
       eventId: z.string().describe('The note: 64-character hex, or note1… / nevent1….'),
       trusted: z.array(z.string()).max(10).optional().describe('Keys you trust (hex or npub), e.g. your own.'),
@@ -540,11 +540,11 @@ export function createServer(cfg: Config, api: NostrApi = realApi, clock: () => 
       return {
         npub: nip19.npubEncode(r.pubkey), verdict: j.verdict, reasons: j.reasons, trust: { score: r.trust.score, level: r.trust.level },
         interactions: theirs.map((e) => ({ kind: e.kind, kindName: kindName(e.kind), id: e.id })),
-        behaviour: { eventsSeen: b.events, notes: b.notes, linkFraction: Math.round(b.linkFraction * 100) / 100, sameTextMax: b.maxRepeats, burstEventsPerMinute: b.burstEvents },
+        behaviour: { eventsSeen: b.events, notes: b.notes, linkFraction: Math.round(b.linkFraction * 100) / 100, sameTextMax: b.maxRepeats, burstEventsPerMinute: b.burstEvents, answersToOthers: b.repliesToOthers, answersToOthersWithLinks: b.linkedReplies, sameTextInAnswersMax: b.replyRepeats },
         untrusted: { sample: theirs.slice(0, 2).map((e) => cleanText(e.content, 160)) },
       }
     }).sort((x, y) => VERDICT_ORDER[x.verdict] - VERDICT_ORDER[y.verdict] || y.trust.score - x.trust.score)
-    const byVerdict: Record<string, number> = { 'likely-bot': 0, suspicious: 0, unknown: 0, established: 0 }
+    const byVerdict: Record<string, number> = { 'promotional-bot': 0, automated: 0, suspicious: 0, unknown: 0, established: 0 }
     for (const p of people) byVerdict[p.verdict]!++
     const count = (ks: number[]) => mine.filter((e) => ks.includes(e.kind)).length
     return {

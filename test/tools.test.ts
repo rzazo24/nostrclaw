@@ -512,7 +512,8 @@ describe('review_interactions', () => {
   it('separates the spam bot from the person who likes the note, explains why, and keeps third-party text under "untrusted"', async () => {
     const me = key(), bot = key(), friend = key(), stranger = key(), botFriends = [key(), key()]
     const note = ev(me, 1, 'Meet nostrclaw, an MCP server', NOW - 3600)
-    const botNotes = Array.from({ length: 14 }, (_, i) => ev(bot, 1, `Join our free signals group today https://t.example/${i}`, NOW - 7200 - i * 4))
+    const victim = key()
+    const botNotes = Array.from({ length: 14 }, (_, i) => ev(bot, 1, `Join our free signals group today https://t.example/${i}`, NOW - 7200 - i * 4, [['e', 'ab'.repeat(32)], ['p', victim.pk]]))
     const events = [
       note,
       ev(bot, 1, 'Join our free signals group today https://t.example/reply', NOW - 600, [['e', note.id], ['p', me.pk]]), ...botNotes,
@@ -526,15 +527,25 @@ describe('review_interactions', () => {
     const r = (await call(client, 'review_interactions', { eventId: note.id, trusted: [me.pk] })).json
     expect(r).toMatchObject({ foundTarget: true, interactions: { replies: 2, reactions: 1, reposts: 0, zaps: 1, distinctPeople: 3 }, examined: 3 })
     const by = (pk: string) => r.people.find((p: { npub: string }) => p.npub === nip19.npubEncode(pk))
-    expect(by(bot.pk)).toMatchObject({ verdict: 'likely-bot' })
-    expect(by(bot.pk).reasons.join(' ')).toMatch(/same text 15 times.*100% of its 15 notes carry a link/)
+    expect(by(bot.pk)).toMatchObject({ verdict: 'promotional-bot' })
+    expect(by(bot.pk).reasons.join(' ')).toMatch(/same text 15 times.*15 of its 15 answers to other people carry a link/)
     expect(by(bot.pk).trust.score).toBeGreaterThan(0) // somewhat vouched for, and still a bot
     expect(by(friend.pk)).toMatchObject({ verdict: 'established', trust: { level: 'established' } })
     expect(by(stranger.pk)).toMatchObject({ verdict: 'unknown' })
-    expect(r.people.map((p: { verdict: string }) => p.verdict)).toEqual(['likely-bot', 'established', 'unknown'].sort((x, y) => ({ 'likely-bot': 0, suspicious: 1, unknown: 2, established: 3 } as Record<string, number>)[x]! - ({ 'likely-bot': 0, suspicious: 1, unknown: 2, established: 3 } as Record<string, number>)[y]!))
-    expect(r.byVerdict).toMatchObject({ 'likely-bot': 1, established: 1, unknown: 1, suspicious: 0 })
+    expect(r.people.map((p: { verdict: string }) => p.verdict)).toEqual(['promotional-bot', 'unknown', 'established'].sort((x, y) => ({ 'promotional-bot': 0, automated: 1, suspicious: 2, unknown: 3, established: 4 } as Record<string, number>)[x]! - ({ 'promotional-bot': 0, automated: 1, suspicious: 2, unknown: 3, established: 4 } as Record<string, number>)[y]!))
+    expect(r.byVerdict).toMatchObject({ 'promotional-bot': 1, automated: 0, established: 1, unknown: 1, suspicious: 0 })
     expect(by(bot.pk).untrusted.sample[0]).toMatch(/free signals group/)
     expect(JSON.stringify({ ...r, people: r.people.map((p: object) => ({ ...p, untrusted: undefined })) })).not.toMatch(/free signals|good morning|thanks for sharing/) // third-party text only under untrusted
+  })
+
+  it('tells an automated bot that publishes its own reports from a promotional one, using only what each says to other people', async () => {
+    const me = key(), reporter = key(), note = ev(me, 1, 'A note a bot reacted to', NOW - 3600)
+    const reports = Array.from({ length: 30 }, (_, i) => ev(reporter, 1, i % 6 === 0 ? `Top 10 zappers on Nostr, last 7 days https://t.example/${i}` : `Weekly leaderboard number ${['a', 'b', 'c', 'd', 'e'][i % 5]} for the community ${i}`, NOW - 90000 + (i < 20 ? i : 5000 + i * 3000)))
+    const { client } = await setup(memory([note, ev(reporter, 7, '+', NOW - 200, [['e', note.id], ['p', me.pk]]), ...reports]))
+    const r = (await call(client, 'review_interactions', { eventId: note.id })).json
+    expect(r.people[0]).toMatchObject({ verdict: 'automated', behaviour: { answersToOthers: 0, sameTextInAnswersMax: 0 } })
+    expect(r.people[0].reasons.join(' ')).toMatch(/does not answer other people/)
+    expect(r.byVerdict).toMatchObject({ automated: 1, 'promotional-bot': 0 })
   })
 
   it('works for a note with no interactions, rejects bad ids, and ignores the author\'s own replies', async () => {

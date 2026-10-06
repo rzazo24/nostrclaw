@@ -1,6 +1,7 @@
-// Judging the people who interact with a note: what a key DOES (repeated text, links, bursts) together with what the network says about it (trust).
-// The two measure different things. A spam bot can be followed by other bots and look "somewhat trusted"; what gives it away is its behaviour.
-// Pure functions: the tool fetches, this decides. Third-party text never appears in the reasons.
+// Judging the people who interact with a note: what a key DOES (repeated text, links, bursts, and above all what it says to OTHER people) together with
+// what the network says about it (trust). The two measure different things: a spam bot can be followed by other bots and look "somewhat trusted"; what gives
+// it away is its behaviour. And "automated" is not "promotional": a bot that publishes its own periodic reports or just reacts is not the same as one that
+// answers strangers with the same advert and a link. Pure functions; third-party text never appears in the reasons.
 import type { Event } from 'nostr-tools'
 import { burstOf } from './bursts.js'
 import { clusterTexts, isDistinctive } from './text.js'
@@ -18,38 +19,57 @@ export interface Behaviour {
   maxRepeats: number
   /** The most events inside any 60 seconds. */
   burstEvents: number
+  /** Notes that answer someone else's note (an `e` tag plus a `p` tag naming another key): what the key says to other people. */
+  repliesToOthers: number
+  /** Of those, how many carry a link. */
+  linkedReplies: number
+  /** The most times one distinctive text was posted among those replies. */
+  replyRepeats: number
 }
 
 export function behaviourOf(events: Event[]): Behaviour {
   const notes = events.filter((e) => e.kind === 1)
   const withLinks = notes.filter((e) => LINK.test(e.content)).length
-  const maxRepeats = Math.max(0, ...clusterTexts(notes).filter((c) => isDistinctive(c) && c.events >= 2).map((c) => c.events))
+  const repeatsOf = (es: Event[]) => Math.max(0, ...clusterTexts(es).filter((c) => isDistinctive(c) && c.events >= 2).map((c) => c.events))
+  const replies = notes.filter((e) => e.tags.some((t) => t[0] === 'e') && e.tags.some((t) => t[0] === 'p' && t[1] && t[1] !== e.pubkey))
   return {
-    events: events.length, notes: notes.length, linkFraction: notes.length ? withLinks / notes.length : 0, maxRepeats,
+    events: events.length, notes: notes.length, linkFraction: notes.length ? withLinks / notes.length : 0, maxRepeats: repeatsOf(notes),
     burstEvents: events.length ? burstOf(events.map((e) => e.created_at), 60).events : 0,
+    repliesToOthers: replies.length, linkedReplies: replies.filter((e) => LINK.test(e.content)).length, replyRepeats: repeatsOf(replies),
   }
 }
 
-export type Verdict = 'likely-bot' | 'suspicious' | 'established' | 'unknown'
+export type Verdict = 'promotional-bot' | 'automated' | 'suspicious' | 'established' | 'unknown'
 
 export interface Judgement { verdict: Verdict; reasons: string[] }
 
 /** The thresholds, in one place so the documentation and the tests can quote them. */
-export const REVIEW = { repeats: 3, bigRepeats: 10, linkFraction: 0.6, minNotesForLinks: 5, bigNotes: 10, burst: 10 } as const
+export const REVIEW = { repeats: 3, bigRepeats: 10, linkFraction: 0.6, minNotesForLinks: 5, bigNotes: 10, burst: 10, promoReplies: 3, promoLinkShare: 0.5 } as const
 
 export function judge(b: Behaviour, trust: { score: number; level: 'established' | 'some' | 'unknown' }): Judgement {
   const reasons: string[] = []
   const repeats = b.maxRepeats >= REVIEW.repeats
   const links = b.notes >= REVIEW.minNotesForLinks && b.linkFraction >= REVIEW.linkFraction
   const burst = b.burstEvents >= REVIEW.burst
+  const promoReplies = b.replyRepeats >= REVIEW.promoReplies || (b.linkedReplies >= REVIEW.promoReplies && b.linkedReplies >= b.repliesToOthers * REVIEW.promoLinkShare)
+
+  // what it says to OTHER people decides "promotional": unsolicited, repeated, or full of links
+  if (promoReplies) {
+    if (b.replyRepeats >= REVIEW.promoReplies) reasons.push(`answered other people's notes with the same text ${b.replyRepeats} times`)
+    if (b.linkedReplies >= REVIEW.promoReplies) reasons.push(`${b.linkedReplies} of its ${b.repliesToOthers} answers to other people carry a link`)
+    return { verdict: 'promotional-bot', reasons }
+  }
   if (repeats) reasons.push(`posted the same text ${b.maxRepeats} times`)
   if (links) reasons.push(`${Math.round(b.linkFraction * 100)}% of its ${b.notes} notes carry a link`)
   if (burst) reasons.push(`${b.burstEvents} events within a minute`)
-  if (repeats && (links || b.notes >= REVIEW.bigNotes || b.maxRepeats >= REVIEW.bigRepeats)) return { verdict: 'likely-bot', reasons }
+  // automated but not promotional: it repeats itself or posts in bulk, yet is not pushing the same advert at strangers
+  if ((repeats && (links || b.notes >= REVIEW.bigNotes || b.maxRepeats >= REVIEW.bigRepeats)) || (burst && b.notes >= REVIEW.bigNotes)) {
+    return { verdict: 'automated', reasons: [...reasons, 'it does not answer other people with the same text or links'] }
+  }
   if (repeats || links || burst) return { verdict: 'suspicious', reasons }
   if (trust.level === 'established') return { verdict: 'established', reasons: [`trust ${trust.score}/100 and nothing in its behaviour stands out`] }
   return { verdict: 'unknown', reasons: ['nothing in its behaviour stands out, and nothing vouches for it either'] }
 }
 
 /** Worst first, for listing. */
-export const VERDICT_ORDER: Record<Verdict, number> = { 'likely-bot': 0, suspicious: 1, unknown: 2, established: 3 }
+export const VERDICT_ORDER: Record<Verdict, number> = { 'promotional-bot': 0, automated: 1, suspicious: 2, unknown: 3, established: 4 }

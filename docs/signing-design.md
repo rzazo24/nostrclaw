@@ -142,7 +142,9 @@ event id, kind, content hash, relays and result. No content, no secrets, no URIs
   user sees them in the draft. Other kinds are left exactly as given.
 - **`review_interactions`** (read-only) looks at everyone who replied to, reacted to or reposted a note: web-of-trust score plus behaviour (`src/review.ts`). The
   order of weight is deliberate: behaviour first. In the real network a spam bot with 100 near-identical promotional notes was followed by 25 keys and scored
-  55/100 in trust; only its behaviour gave it away.
+  55/100 in trust; only its behaviour gave it away. The verdicts separate **promotional-bot** (answers other people's notes with the same text or with links) from
+  **automated** (a declared bot that publishes periodic reports in bulk or only reacts): a real assistant bot posted 138 events in a minute and a weekly leaderboard
+  four times, and was harmless. What decides is what the key says to *other people*, not how often it posts.
 
 ## Known limitation
 
