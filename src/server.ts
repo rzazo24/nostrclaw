@@ -7,6 +7,7 @@ import { buildReport, kindName, parseProfile, viewEvent } from './analysis.js'
 import { VERSION, type Config } from './config.js'
 import { realApi, type NostrApi } from './nostr/client.js'
 import { createSigningContext, registerSigningTools, type SigningContext } from './signing/tools.js'
+import { compareSamples, isStoredKind } from './compare.js'
 import { cleanText, resolveRelay, toHexPubkey, UNTRUSTED_NOTE } from './safety.js'
 import { NO_FACTS, pickCandidates, triage, WEIGHTS, type AuthorFacts } from './triage.js'
 
@@ -18,6 +19,7 @@ export const INSTRUCTIONS = [
   'A relay only knows the events it holds, so "first seen" figures mean "the oldest event this relay returned", not the age of an account.',
   'Start with relay_overview, then activity_report for the big picture; account_triage ranks the authors that look like throw-away or abusive keys (with the reason for every point);',
   'recent_events / author_report look closer at events and keys, and event_engagement shows the replies, reactions, reposts and zaps of one event.',
+  'With several relays configured, compare_relays contrasts them (information, speed, how much of what they hold is on the others) and event_locations says which relays hold given events.',
   'Scores are triage aids, not verdicts: a missing profile on this relay does not mean the account is new elsewhere.',
 ].join(' ')
 
@@ -42,6 +44,9 @@ export function toTagFilter(tags: Record<string, string[]> | undefined): Record<
   }
   return out
 }
+
+const relaysParam = z.array(z.string()).min(2).max(8).optional()
+  .describe('Relays to compare (wss://…), at least 2. Each must be one of the configured relays; default: all of them. See nostrclaw_status.')
 
 const hoursParam = (def: number, max: number) => z.number().positive().max(max).default(def)
 
@@ -308,6 +313,107 @@ export function createServer(cfg: Config, api: NostrApi = realApi, clock: () => 
       reactions: { distinctPeople: people.size, sampleSize: sample.events.length, byContent: [...mix.entries()].sort((x, y) => y[1] - x[1]).slice(0, 8).map(([content, n]) => ({ content, n })), reactedToOwnEvent: target ? sample.events.some((e) => e.pubkey === target.pubkey) : undefined },
       untrusted: { event: target ? viewEvent(target, now, 400) : undefined },
       note: UNTRUSTED_NOTE,
+    }
+  }))
+
+  /** The relays a multi-relay tool will use: the given ones (each checked against the allowlist) or all configured. At least two. */
+  const pickRelays = (given: string[] | undefined): string[] => {
+    const list = [...new Set((given?.length ? given : cfg.relays).map((r) => resolveRelay(r, cfg)))]
+    if (list.length < 2) throw new Error(`comparing needs at least 2 relays but only ${list.length} is available. Add more to NOSTRCLAW_RELAYS (comma-separated wss:// URLs); configured now: ${cfg.relays.join(', ')}`)
+    return list
+  }
+  const reason = (e: unknown) => cleanText(e instanceof Error ? e.message : String(e), 200)
+
+  server.registerTool('compare_relays', {
+    title: 'Compare relays',
+    description: 'Compares several configured relays side by side: what each says about itself (NIP-11: software, supported NIPs, limits), how fast it answers, how busy it is, and how much of what it holds is ALSO on the others (a relay whose events are mostly elsewhere is a mirror; one with many events found nowhere else is a source). Samples are taken at the same moment and compared only inside the window every sample really covers, so a busy relay is not penalised for returning only its newest events. A relay that fails is reported and the others still compared.',
+    inputSchema: {
+      relays: relaysParam,
+      hours: hoursParam(1, 24 * 7).describe('Window in hours to sample (default 1).'),
+      sampleLimit: z.number().int().min(10).max(1000).default(300).describe('Most events to fetch per relay.'),
+    },
+    annotations: READ_ONLY,
+  }, guard(async (a: { relays?: string[]; hours: number; sampleLimit: number }) => {
+    const urls = pickRelays(a.relays), now = clock()
+    const limit = Math.min(a.sampleLimit, cfg.maxEvents), since = Math.floor(now - a.hours * 3600)
+    const probes = await Promise.all(urls.map(async (url) => {
+      const [info, sample] = await Promise.allSettled([api.nip11(url, opts), query(url, { since, limit }, limit)])
+      return { url, info, sample }
+    }))
+    const samples = probes.flatMap((p) => {
+      if (p.sample.status !== 'fulfilled') return []
+      const doc = p.info.status === 'fulfilled' ? p.info.value.doc : null
+      const cap = num(((doc?.limitation ?? {}) as Record<string, unknown>).max_limit)
+      // a relay may silently cap a request below the limit asked for: treat reaching its own advertised cap as truncation too
+      const events = p.sample.value.events
+      return [{ relay: p.url, events, truncated: events.length >= limit || (cap !== undefined && events.length >= cap), fetched: p.sample.value }]
+    })
+    const cmp = compareSamples(samples, since, now)
+    const overlap = new Map(cmp.perRelay.map((o) => [o.relay, o]))
+    const failed = probes.filter((p) => p.sample.status === 'rejected').map((p) => ({ relay: p.url, error: reason((p.sample as PromiseRejectedResult).reason) }))
+    const relays = probes.map((p) => {
+      const doc = p.info.status === 'fulfilled' ? p.info.value.doc : null
+      const lim = (doc?.limitation ?? {}) as Record<string, unknown>
+      const s = samples.find((x) => x.relay === p.url)
+      const kinds = new Map<number, number>()
+      for (const e of s?.events ?? []) if (isStoredKind(e.kind)) kinds.set(e.kind, (kinds.get(e.kind) ?? 0) + 1)
+      const nips = Array.isArray(doc?.supported_nips) ? (doc!.supported_nips as unknown[]).filter((n) => Number.isInteger(n)) as number[] : undefined
+      return {
+        relay: p.url,
+        reachable: { http: p.info.status === 'fulfilled', websocket: !!s },
+        latencyMs: { nip11: p.info.status === 'fulfilled' ? p.info.value.ms : undefined, websocketQuery: s?.fetched.ms },
+        supportedNips: nips?.slice(0, 80),
+        limitation: Object.fromEntries(Object.entries(lim).filter(([, v]) => typeof v === 'number' || typeof v === 'boolean').slice(0, 30)),
+        sample: s ? { events: s.events.length, truncated: s.truncated, complete: s.fetched.eose, topKinds: [...kinds.entries()].sort((x, y) => y[1] - x[1]).slice(0, 5).map(([kind, n]) => ({ kind, name: kindName(kind), n })) } : undefined,
+        inCommonWindow: overlap.get(p.url),
+        error: failed.find((f) => f.relay === p.url)?.error ?? (p.info.status === 'rejected' ? `NIP-11: ${reason(p.info.reason)}` : undefined),
+        untrusted: doc ? { name: cleanText(doc.name, 100), software: cleanText(doc.software, 120), version: cleanText(doc.version, 60) } : undefined,
+      }
+    })
+    const nipLists = relays.flatMap((r) => (r.supportedNips ? [new Set(r.supportedNips)] : []))
+    const allNips = new Set(nipLists.flatMap((s) => [...s]))
+    return {
+      compared: samples.length, requestedWindowHours: a.hours,
+      commonWindow: { start: new Date(cmp.windowStart * 1000).toISOString(), hours: cmp.windowHours, shortened: cmp.shortened, why: cmp.shortened ? 'a relay returned only its newest events, so every relay is compared over the period that one really covers' : undefined },
+      distinctEventsSeen: cmp.distinctEvents, onEveryRelay: cmp.onEveryRelay,
+      nips: nipLists.length > 1 ? { onAll: [...allNips].filter((n) => nipLists.every((s) => s.has(n))).sort((x, y) => x - y), onlySomeRelays: [...allNips].filter((n) => !nipLists.every((s) => s.has(n))).sort((x, y) => x - y) } : undefined,
+      relays,
+      caveats: 'Each relay only knows what it was sent; "only here" means "not in the other relays\' samples", not "exists nowhere". Relays may silently cap a request below the limit asked for. Ephemeral events are ignored (relays do not store them).',
+      note: UNTRUSTED_NOTE,
+    }
+  }))
+
+  server.registerTool('event_locations', {
+    title: 'Event locations',
+    description: 'For up to 20 event ids: which of the configured relays hold each one. Shows the kind and age only, not the content. Useful to check whether a note spread to other relays, or whether a relay dropped something.',
+    inputSchema: { ids: z.array(z.string()).min(1).max(20).describe('Event ids: 64-character hex, or note1… / nevent1… strings.'), relays: relaysParam },
+    annotations: READ_ONLY,
+  }, guard(async (a: { ids: string[]; relays?: string[] }) => {
+    const urls = pickRelays(a.relays), now = clock()
+    const ids = [...new Set(a.ids.map((raw) => {
+      let id = raw.trim().toLowerCase()
+      if (/^(note1|nevent1)/.test(id)) { try { const d = nip19.decode(id); id = d.type === 'note' ? d.data : d.type === 'nevent' ? d.data.id : '' } catch { id = '' } }
+      if (!/^[0-9a-f]{64}$/.test(id)) throw new Error(`not a valid event id: ${cleanText(raw, 40)}`)
+      return id
+    }))]
+    type Found = { url: string; events: Event[]; complete?: boolean; error?: string }
+    const results: Found[] = await Promise.all(urls.map(async (url): Promise<Found> => {
+      try { const r = await query(url, { ids, limit: ids.length }, ids.length); return { url, events: r.events.filter((e) => ids.includes(e.id)), complete: r.eose } }
+      catch (e) { return { url, events: [], error: reason(e) } }
+    }))
+    return {
+      relays: results.map((r) => ({ relay: r.url, holds: r.error ? undefined : new Set(r.events.map((e) => e.id)).size, error: r.error, complete: r.error ? undefined : r.complete })),
+      events: ids.map((id) => {
+        const found = results.flatMap((r) => r.events.filter((e) => e.id === id).map((e) => ({ url: r.url, e })))
+        const unknown = results.filter((r) => r.error).map((r) => r.url)
+        return {
+          id, kind: found[0] ? found[0].e.kind : undefined, kindName: found[0] ? kindName(found[0].e.kind) : undefined,
+          ageMinutes: found[0] ? Math.max(0, Math.round((now - found[0].e.created_at) / 60)) : undefined,
+          onRelays: found.map((f) => f.url), missingFrom: urls.filter((u) => !found.some((f) => f.url === u) && !unknown.includes(u)),
+          unknown: unknown.length ? unknown : undefined,
+        }
+      }),
+      note: 'A relay may not hold an event for many reasons (never sent, policy, expiry, deletion): "missing" is an observation, not a diagnosis.',
     }
   }))
 

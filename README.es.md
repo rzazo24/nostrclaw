@@ -39,6 +39,10 @@ Después pídele a Claude cosas como *«Audita mi relé»*, *«¿De qué está h
 | `author_report` | Una clave: perfil (kind 0), seguidos, lista de relés, actividad en este relé |
 | `account_triage` | Lista los autores de una ventana cuyo *comportamiento* parece spam (texto compartido con otras claves —también casi iguales—, ráfagas, solo enlaces), cada punto con su motivo. Los saludos cortos («Azul», «gm») no cuentan como copia y «high» exige dos señales de comportamiento. Que falte perfil/seguidos/lista de relés en este relé suma, pero nunca marca a una clave por sí solo; las claves sin señal de comportamiento solo se cuentan. Ayuda de triaje, no veredicto |
 | `event_engagement` | Un evento: respuestas, reacciones, reposts y zaps, contados a partir de los eventos que lo referencian (hasta 500; el COUNT de NIP-45 con filtro de etiqueta responde un 0 falso en khatru+sqlite, así que no se usa), desglose de reacciones y personas distintas |
+| `compare_relays` | Varios relés configurados lado a lado: NIP-11 (software, NIPs, límites), latencia, actividad y qué parte de lo que guarda cada uno está también en los demás (espejo o fuente). Se compara solo dentro de la ventana que cubren de verdad todas las muestras, para no penalizar a un relé muy activo que solo devuelve lo más nuevo; si un relé falla se informa y se compara el resto |
+| `event_locations` | Para hasta 20 ids de evento, qué relés configurados tienen cada uno (solo tipo y antigüedad, sin contenido) |
+
+Las dos herramientas de comparación necesitan al menos dos relés en `NOSTRCLAW_RELAYS` (separados por comas).
 
 `recent_events`, `count_events` y `activity_report` aceptan también un filtro `tags` (`{"e": [id]}`, `{"p": [pubkey]}`, `{"t": ["bitcoin"]}`).
 

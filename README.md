@@ -39,6 +39,10 @@ Then ask Claude things like *“Audit my relay”*, *“What is the traffic of t
 | `author_report` | One key: profile (kind 0), follows, relay list, activity on this relay |
 | `account_triage` | Lists the authors of a window whose *behaviour* looks like spam (text shared with other keys — near-copies included —, bursts, link-only posting), each point with a stated reason. Short greetings ("Azul", "gm") don't count as copying, and "high" needs two behaviour signals. Missing profile/follows/relay list on this relay adds to the score but never flags a key on its own; keys with no behaviour signal are only counted. A triage aid, not a verdict |
 | `event_engagement` | One event: replies, reactions, reposts and zaps, counted from the events that reference it (up to 500; NIP-45 COUNT with tag filters answers a silent 0 on khatru+sqlite, so it is not used), reaction breakdown and distinct reactors |
+| `compare_relays` | Several configured relays side by side: NIP-11 (software, NIPs, limits), latency, activity, and how much of what each holds is also on the others (mirror vs source). Compared only inside the window every sample really covers, so a busy relay is not penalised for returning only its newest events; a relay that fails is reported and the rest still compared |
+| `event_locations` | For up to 20 event ids, which configured relays hold each (kind and age only, no content) |
+
+The two comparison tools need at least two relays in `NOSTRCLAW_RELAYS` (comma-separated).
 
 `recent_events`, `count_events` and `activity_report` also accept a `tags` filter (`{"e": [id]}`, `{"p": [pubkey]}`, `{"t": ["bitcoin"]}`).
 
