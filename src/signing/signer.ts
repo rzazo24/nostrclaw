@@ -21,6 +21,9 @@ interface Saved { clientSecret: string; signerPubkey?: string; relays?: string[]
 const CONNECT_WINDOW_MS = 120_000
 /** After the handshake the signer must tell us which key it signs as. Signer apps on a phone are often suspended in the background, so this waits longer. */
 const IDENTITY_WAIT_MS = 75_000
+/** Resuming a saved session: how long to keep asking while the user opens the signer app, and how long each ask waits. */
+const RESUME_WAIT_MS = 150_000
+const RESUME_ATTEMPT_MS = 20_000
 
 const asError = (e: unknown): Error => (e instanceof Error ? e : new Error(typeof e === 'string' ? e : JSON.stringify(e)))
 
@@ -100,15 +103,39 @@ export class SignerManager {
   }
 
   // ---- connecting ----
-  /** Resumes the saved session. True when the signer answered. */
+  /** True when a previous session (app key + the signer's pubkey and relays) is saved on this machine. */
+  hasSavedSession(): boolean {
+    const saved = this.load()
+    return !!(saved?.signerPubkey && saved.relays?.length)
+  }
+
+  /**
+   * Resumes the saved session. True when the signer answered. A phone signer is often suspended until the user opens it, so this does not give up
+   * after one try: it asks again every few seconds until `resumeWaitMs` has passed (so the user can open the app while this waits). The saved
+   * session is left untouched when it fails.
+   */
   async resume(): Promise<boolean> {
     if (this.state === 'connected') return true
     const saved = this.load()
     if (!saved?.signerPubkey || !saved.relays?.length) return false
+    const budget = this.cfg.signing.resumeWaitMs ?? this.cfg.signing.identityWaitMs ?? RESUME_WAIT_MS
+    const attempt = Math.min(this.cfg.signing.identityWaitMs ?? RESUME_ATTEMPT_MS, RESUME_ATTEMPT_MS)
+    const end = Date.now() + budget
     try {
       const bp: BunkerPointer = { pubkey: saved.signerPubkey, relays: saved.relays, secret: null }
       const signer = BunkerSigner.fromBunker(hexToBytes(saved.clientSecret), bp, this.params())
-      await this.established(signer, saved.clientSecret)
+      this.state = 'connecting'
+      this.phase = 'waiting-for-the-signer-to-answer'
+      this.signer = signer; this.signerPubkey = bp.pubkey; this.relays = bp.relays
+      for (;;) {
+        try {
+          this.userPubkey = await withTimeout(signer.getPublicKey(), Math.max(1, Math.min(attempt, end - Date.now())), 'the signer (which key it signs as)')
+          break
+        } catch (e) {
+          if (Date.now() + 500 >= end) throw new Error(`${asError(e).message}. Open the signer app (Clave) on screen and try again; the saved session is intact`)
+        }
+      }
+      this.state = 'connected'; this.phase = undefined; this.lastError = undefined; this.autoApprovalSuspected = false; this.pending = undefined
       return true
     } catch (e) { await this.dropSigner(); this.failed(e); return false }
   }

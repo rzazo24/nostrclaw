@@ -110,6 +110,10 @@ event id, kind, content hash, relays and result. No content, no secrets, no URIs
   published nothing); the same reaction with only `e` and `p` tags signed at once. It was not isolated whether the tag or having Clave on screen made the
   difference, so `draft_event`'s description recommends plain `e`/`p` tags for reactions.
 
+- Resuming a saved session needs Clave **on screen at the moment of the call**: a suspended Clave does not answer, and the old behaviour (one try of 75 s, then a
+  new link) looked like an expired session. Now `signer_connect` keeps asking for about 2.5 minutes (so the user can open the app while it waits), never swaps
+  the saved session for a new link on its own, and leaves the file untouched when it fails; `newLink: true` asks for a fresh link on purpose.
+
 ## Known limitation
 
 The confirmation question (MCP elicitation) controls publishing **through nostrclaw's tools**. It cannot control a model that has a shell and reads the saved app

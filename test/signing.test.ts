@@ -18,14 +18,14 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const yes: Elicit = () => ({ action: 'accept', content: { publish: true } })
 const no: Elicit = () => ({ action: 'decline' })
 
-interface Opts { identityWaitMs?: number; policy?: Record<string, unknown>; signer?: Partial<Behaviour>; elicit?: Elicit; dirs?: { config: string; state: string }; connected?: boolean }
+interface Opts { identityWaitMs?: number; resumeWaitMs?: number; policy?: Record<string, unknown>; signer?: Partial<Behaviour>; elicit?: Elicit; dirs?: { config: string; state: string }; connected?: boolean }
 
 async function setup(o: Opts = {}) {
   const config = o.dirs?.config ?? fs.mkdtempSync(path.join(os.tmpdir(), 'nc-config-'))
   const state = o.dirs?.state ?? fs.mkdtempSync(path.join(os.tmpdir(), 'nc-state-'))
   // a person takes longer than 500 ms to decide in these tests; an "always allow" signer answers at once (the wide gap keeps a slow CI machine from confusing them)
   fs.writeFileSync(path.join(config, 'policy.json'), JSON.stringify({ minHumanApprovalMs: 500, signTimeoutMs: 2500, ...o.policy }))
-  const c: Config = cfg({ relays: [relay.url], allowPrivate: true, timeoutMs: 5000, signing: { enabled: true, signerRelays: [relay.url], configDir: config, stateDir: state, identityWaitMs: o.identityWaitMs } })
+  const c: Config = cfg({ relays: [relay.url], allowPrivate: true, timeoutMs: 5000, signing: { enabled: true, signerRelays: [relay.url], configDir: config, stateDir: state, identityWaitMs: o.identityWaitMs, resumeWaitMs: o.resumeWaitMs } })
   const fake = new FakeSigner(o.signer)
   const conn = await connect(c, undefined, undefined, o.elicit)
   closers.push(async () => { await fake.stop(); await conn.close() })
@@ -247,6 +247,32 @@ describe.skipIf(!bin)('signing (real relay + pretend NIP-46 signer)', () => {
     expect(fs.existsSync(saved)).toBe(false)
     expect((await call(b.client, 'signer_status')).json).toMatchObject({ state: 'disconnected' })
     expect((await b.publishNote('after disconnecting')).published!.text).toMatch(/no signer is connected/)
+  })
+
+  it('resuming keeps asking while the signer app wakes up, instead of giving up after one try', async () => {
+    const a = await setup({ elicit: yes })
+    const b = await setup({ elicit: yes, connected: false, identityWaitMs: 400, resumeWaitMs: 8000, dirs: { config: a.config, state: a.state } })
+    a.fake.behaviour.silentAboutIdentity = true // the app is "suspended in the background"
+    setTimeout(() => { a.fake.behaviour.silentAboutIdentity = false }, 1800) // the user opens it
+    const r = await call(b.client, 'signer_connect')
+    expect(r.json).toMatchObject({ state: 'connected', note: 'Resumed the saved session.' })
+    expect(a.fake.seen.filter((s) => s.method === 'get_public_key').length).toBeGreaterThan(2) // it asked again and again
+  })
+
+  it('if the signer never answers, the saved session is kept and NO new link is made; a new link only on request', async () => {
+    const a = await setup({ elicit: yes })
+    const saved = path.join(a.config, 'signer.json')
+    const before = fs.readFileSync(saved, 'utf8')
+    const b = await setup({ elicit: yes, connected: false, identityWaitMs: 300, resumeWaitMs: 1200, dirs: { config: a.config, state: a.state } })
+    a.fake.behaviour.silentAboutIdentity = true
+    const r = await call(b.client, 'signer_connect')
+    expect(r.json).toMatchObject({ state: 'disconnected' })
+    expect(r.json.nostrconnectUri).toBeUndefined()
+    expect(r.json.lastError).toMatch(/saved session is intact/)
+    expect(r.json.note).toMatch(/open the signer app.*newLink: true/s)
+    expect(fs.readFileSync(saved, 'utf8')).toBe(before) // untouched
+    const fresh = await call(b.client, 'signer_connect', { newLink: true })
+    expect(fresh.json).toMatchObject({ state: 'connecting' }); expect(fresh.json.nostrconnectUri).toMatch(/^nostrconnect:\/\//)
   })
 
   it('a note from the network that tells the assistant to publish cannot make it publish: only the user\'s answer counts', async () => {

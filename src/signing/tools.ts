@@ -56,13 +56,20 @@ export function registerSigningTools(server: McpServer, cfg: Config, api: NostrA
 
   server.registerTool('signer_connect', {
     title: 'Connect a remote signer (NIP-46)',
-    description: 'Connects to the user\'s remote signer (Clave, nsec.app, a bunker). Without arguments it resumes the saved session or returns a nostrconnect:// link (and Clave\'s universal link) for the user to open in their signer; the connection completes in the background, so call signer_status afterwards. With `bunker`, connects to that bunker:// URI. The user\'s private key never reaches this process.',
-    inputSchema: { bunker: z.string().max(2000).optional().describe('A bunker:// URI. Omit to get a link to open in the signer instead.') },
+    description: 'Connects to the user\'s remote signer (Clave, nsec.app, a bunker). If a session is saved it RESUMES it (the user must have the signer app open on screen: ask first, then call; it keeps asking for about two and a half minutes) and never swaps it for a new link on its own. With no saved session, or with `newLink: true`, it returns a nostrconnect:// link (and Clave\'s universal link) for the user to open in their signer; that connection completes in the background, so call signer_status afterwards. With `bunker`, connects to that bunker:// URI. The user\'s private key never reaches this process.',
+    inputSchema: {
+      bunker: z.string().max(2000).optional().describe('A bunker:// URI. Omit to get a link to open in the signer instead.'),
+      newLink: z.boolean().optional().describe('Ignore the saved session and return a fresh nostrconnect:// link. Use it only when resuming keeps failing or the user wants to link a different signer.'),
+    },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
-  }, guard(async ({ bunker }: { bunker?: string }) => {
+  }, guard(async ({ bunker, newLink }: { bunker?: string; newLink?: boolean }) => {
     if (signer.state === 'connected') return { ...status(), note: 'Already connected.' }
     if (bunker) { await signer.connectBunker(bunker); return status() }
-    if (await signer.resume()) return { ...status(), note: 'Resumed the saved session.' }
+    if (!newLink && signer.hasSavedSession()) {
+      // the user must have the signer app open ON SCREEN: ask them first, then call this; it keeps asking for a couple of minutes
+      if (await signer.resume()) return { ...status(), note: 'Resumed the saved session.' }
+      return { ...status(), note: 'The saved session is intact but the signer did not answer. Ask the user to open the signer app (Clave) and keep it on screen, then call signer_connect again. Only if that keeps failing, call it with newLink: true for a fresh link.' }
+    }
     const perms = ['get_public_key', ...policy.allowedKinds.slice(0, 10).map((k) => `sign_event:${k}`)] // get_public_key: some signers only answer methods they were asked for
     const { uri, expiresInSeconds } = signer.startNostrConnect(perms)
     return {
