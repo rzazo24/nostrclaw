@@ -350,13 +350,17 @@ export function createServer(cfg: Config, api: NostrApi = realApi, clock: () => 
     await Promise.all(urls.filter((u) => u !== ref && refEvents.length).map(async (url) => {
       try {
         const got = new Set<string>()
+        // batches in parallel (a slow relay answers them together instead of one after another)
+        const batches: string[][] = []
+        for (let i = 0; i < refEvents.length; i += 50) batches.push(refEvents.slice(i, i + 50).map((e) => e.id))
+        const answers = await Promise.all(batches.map((ids) => query(url, { ids, limit: ids.length }, ids.length)))
         let complete = true
-        for (let i = 0; i < refEvents.length; i += 50) {
-          const ids = refEvents.slice(i, i + 50).map((e) => e.id)
-          const r = await query(url, { ids, limit: ids.length }, ids.length)
-          for (const e of r.events) if (ids.includes(e.id)) got.add(e.id)
-          complete = complete && r.eose
-        }
+        answers.forEach((r, i) => {
+          const mine = new Set(r.events.filter((e) => batches[i]!.includes(e.id)).map((e) => e.id))
+          for (const id of mine) got.add(id)
+          // the client stops reading once it has as many events as it asked for, without waiting for EOSE: that is a full answer, not a cut-off one
+          complete = complete && (r.eose || mine.size >= batches[i]!.length)
+        })
         held.set(url, got); finished.set(url, complete)
       } catch { held.set(url, undefined) }
     }))
@@ -413,7 +417,8 @@ export function createServer(cfg: Config, api: NostrApi = realApi, clock: () => 
     }))]
     type Found = { url: string; events: Event[]; complete?: boolean; error?: string }
     const results: Found[] = await Promise.all(urls.map(async (url): Promise<Found> => {
-      try { const r = await query(url, { ids, limit: ids.length }, ids.length); return { url, events: r.events.filter((e) => ids.includes(e.id)), complete: r.eose } }
+      try { const r = await query(url, { ids, limit: ids.length }, ids.length); const mine = r.events.filter((e) => ids.includes(e.id))
+      return { url, events: mine, complete: r.eose || new Set(mine.map((e) => e.id)).size >= ids.length } }
       catch (e) { return { url, events: [], error: reason(e) } }
     }))
     return {

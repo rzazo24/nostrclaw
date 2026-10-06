@@ -346,6 +346,34 @@ describe('compare_relays and event_locations', () => {
     expect((await call(client, 'compare_relays', { reference: 'wss://third.example.net' })).text).toMatch(/not in the allowed list|not allowed|configured/i)
   })
 
+  it('a relay that returned every id asked for is complete even if it never sent EOSE (the client stops at the limit)', async () => {
+    const k = key(), refs = Array.from({ length: 3 }, (_, i) => ev(k, 1, `n${i}`, NOW - i - 1))
+    const { client } = await setup({
+      async query(relay, f) {
+        const x = f as { ids?: string[] }
+        if (!x.ids) return { events: refs, eose: true, notices: [], invalid: 0, ms: 1 }
+        return { events: relay === B ? refs : [], eose: false, notices: [], invalid: 0, ms: 1 } // B: all found, no EOSE; A: not asked
+      },
+    }, two())
+    const r = (await call(client, 'compare_relays')).json.relays.find((q: { relay: string }) => q.relay === B)
+    expect(r.hasTheReferenceEvents).toEqual({ found: 3, of: 3, fraction: 1 })
+    const loc = (await call(client, 'event_locations', { ids: refs.map((e) => e.id) })).json
+    expect(loc.relays.find((q: { relay: string }) => q.relay === B).complete).toBe(true)
+  })
+
+  it('a relay that stopped early WITHOUT returning everything is reported as incomplete, not as "missing"', async () => {
+    const k = key(), refs = Array.from({ length: 3 }, (_, i) => ev(k, 1, `n${i}`, NOW - i - 1))
+    const { client } = await setup({
+      async query(relay, f) {
+        const x = f as { ids?: string[] }
+        if (!x.ids || relay === A) return { events: refs, eose: true, notices: [], invalid: 0, ms: 1 }
+        return { events: [refs[0]!], eose: false, notices: [], invalid: 0, ms: 1 }
+      },
+    }, two())
+    const r = (await call(client, 'compare_relays')).json.relays.find((q: { relay: string }) => q.relay === B)
+    expect(r.hasTheReferenceEvents).toMatchObject({ found: 1, of: 3, incomplete: true })
+  })
+
   it('explains an empty answer with the reason the relay gave', async () => {
     const k = key()
     const { client } = await setup({
