@@ -512,8 +512,7 @@ describe('review_interactions', () => {
   it('separates the spam bot from the person who likes the note, explains why, and keeps third-party text under "untrusted"', async () => {
     const me = key(), bot = key(), friend = key(), stranger = key(), botFriends = [key(), key()]
     const note = ev(me, 1, 'Meet nostrclaw, an MCP server', NOW - 3600)
-    const victim = key()
-    const botNotes = Array.from({ length: 14 }, (_, i) => ev(bot, 1, `Join our free signals group today https://t.example/${i}`, NOW - 7200 - i * 4, [['e', 'ab'.repeat(32)], ['p', victim.pk]]))
+    const botNotes = Array.from({ length: 14 }, (_, i) => ev(bot, 1, `Join our free signals group today https://t.example/${i}`, NOW - 7200 - i * 4, [['e', 'ab'.repeat(32)], ['p', key().pk]]))
     const events = [
       note,
       ev(bot, 1, 'Join our free signals group today https://t.example/reply', NOW - 600, [['e', note.id], ['p', me.pk]]), ...botNotes,
@@ -528,7 +527,7 @@ describe('review_interactions', () => {
     expect(r).toMatchObject({ foundTarget: true, interactions: { replies: 2, reactions: 1, reposts: 0, zaps: 1, distinctPeople: 3 }, examined: 3 })
     const by = (pk: string) => r.people.find((p: { npub: string }) => p.npub === nip19.npubEncode(pk))
     expect(by(bot.pk)).toMatchObject({ verdict: 'promotional-bot' })
-    expect(by(bot.pk).reasons.join(' ')).toMatch(/same text 15 times.*15 of its 15 answers to other people carry a link/)
+    expect(by(bot.pk).reasons.join(' ')).toMatch(/answered 15 different people with the same text, 15 times.*15 of its 15 answers to other people carry a link/)
     expect(by(bot.pk).trust.score).toBeGreaterThan(0) // somewhat vouched for, and still a bot
     expect(by(friend.pk)).toMatchObject({ verdict: 'established', trust: { level: 'established' } })
     expect(by(stranger.pk)).toMatchObject({ verdict: 'unknown' })

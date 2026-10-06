@@ -1,6 +1,6 @@
 {
   "name": "nostrclaw",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "MCP server that lets Claude analyse a Nostr relay (read-only), with remote signing (NIP-46) planned.",
   "license": "MIT",
   "type": "module",

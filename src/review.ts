@@ -25,17 +25,24 @@ export interface Behaviour {
   linkedReplies: number
   /** The most times one distinctive text was posted among those replies. */
   replyRepeats: number
+  /** How many DIFFERENT people received that most repeated text (the same answer to one person is a conversation; to many strangers it is a campaign). */
+  replyRepeatTargets: number
 }
 
 export function behaviourOf(events: Event[]): Behaviour {
   const notes = events.filter((e) => e.kind === 1)
   const withLinks = notes.filter((e) => LINK.test(e.content)).length
-  const repeatsOf = (es: Event[]) => Math.max(0, ...clusterTexts(es).filter((c) => isDistinctive(c) && c.events >= 2).map((c) => c.events))
-  const replies = notes.filter((e) => e.tags.some((t) => t[0] === 'e') && e.tags.some((t) => t[0] === 'p' && t[1] && t[1] !== e.pubkey))
+  const repeated = (es: Event[]) => clusterTexts(es).filter((c) => isDistinctive(c) && c.events >= 2)
+  const repeatsOf = (es: Event[]) => Math.max(0, ...repeated(es).map((c) => c.events))
+  const targetOf = (e: Event) => e.tags.find((t) => t[0] === 'p' && t[1] && t[1] !== e.pubkey)?.[1]
+  const replies = notes.filter((e) => e.tags.some((t) => t[0] === 'e') && targetOf(e) !== undefined)
+  const byId = new Map(replies.map((e) => [e.id, e]))
+  const top = repeated(replies).sort((x, y) => y.events - x.events)[0]
+  const replyRepeatTargets = top ? new Set(top.eventIds.map((id) => targetOf(byId.get(id)!))).size : 0
   return {
     events: events.length, notes: notes.length, linkFraction: notes.length ? withLinks / notes.length : 0, maxRepeats: repeatsOf(notes),
     burstEvents: events.length ? burstOf(events.map((e) => e.created_at), 60).events : 0,
-    repliesToOthers: replies.length, linkedReplies: replies.filter((e) => LINK.test(e.content)).length, replyRepeats: repeatsOf(replies),
+    repliesToOthers: replies.length, linkedReplies: replies.filter((e) => LINK.test(e.content)).length, replyRepeats: repeatsOf(replies), replyRepeatTargets,
   }
 }
 
@@ -44,18 +51,19 @@ export type Verdict = 'promotional-bot' | 'automated' | 'suspicious' | 'establis
 export interface Judgement { verdict: Verdict; reasons: string[] }
 
 /** The thresholds, in one place so the documentation and the tests can quote them. */
-export const REVIEW = { repeats: 3, bigRepeats: 10, linkFraction: 0.6, minNotesForLinks: 5, bigNotes: 10, burst: 10, promoReplies: 3, promoLinkShare: 0.5 } as const
+export const REVIEW = { repeats: 3, bigRepeats: 10, linkFraction: 0.6, minNotesForLinks: 5, bigNotes: 10, burst: 10, promoRepeats: 5, promoTargets: 3, promoReplies: 3, promoLinkShare: 0.5 } as const
 
 export function judge(b: Behaviour, trust: { score: number; level: 'established' | 'some' | 'unknown' }): Judgement {
   const reasons: string[] = []
   const repeats = b.maxRepeats >= REVIEW.repeats
   const links = b.notes >= REVIEW.minNotesForLinks && b.linkFraction >= REVIEW.linkFraction
   const burst = b.burstEvents >= REVIEW.burst
-  const promoReplies = b.replyRepeats >= REVIEW.promoReplies || (b.linkedReplies >= REVIEW.promoReplies && b.linkedReplies >= b.repliesToOthers * REVIEW.promoLinkShare)
+  const sameAdvert = b.replyRepeats >= REVIEW.promoRepeats && b.replyRepeatTargets >= REVIEW.promoTargets
+  const promoReplies = sameAdvert || (b.linkedReplies >= REVIEW.promoReplies && b.linkedReplies >= b.repliesToOthers * REVIEW.promoLinkShare)
 
   // what it says to OTHER people decides "promotional": unsolicited, repeated, or full of links
   if (promoReplies) {
-    if (b.replyRepeats >= REVIEW.promoReplies) reasons.push(`answered other people's notes with the same text ${b.replyRepeats} times`)
+    if (sameAdvert) reasons.push(`answered ${b.replyRepeatTargets} different people with the same text, ${b.replyRepeats} times`)
     if (b.linkedReplies >= REVIEW.promoReplies) reasons.push(`${b.linkedReplies} of its ${b.repliesToOthers} answers to other people carry a link`)
     return { verdict: 'promotional-bot', reasons }
   }

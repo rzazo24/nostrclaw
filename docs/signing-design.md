@@ -144,7 +144,7 @@ event id, kind, content hash, relays and result. No content, no secrets, no URIs
   order of weight is deliberate: behaviour first. In the real network a spam bot with 100 near-identical promotional notes was followed by 25 keys and scored
   55/100 in trust; only its behaviour gave it away. The verdicts separate **promotional-bot** (answers other people's notes with the same text or with links) from
   **automated** (a declared bot that publishes periodic reports in bulk or only reacts): a real assistant bot posted 138 events in a minute and a weekly leaderboard
-  four times, and was harmless. What decides is what the key says to *other people*, not how often it posts.
+  four times, and was harmless. What decides is what the key says to *other people*, not how often it posts: the same text sent to five or more answers **to at least three different people**, or links in at least half of its answers (three or more). The same answer given several times to one person is a conversation, and a real assistant bot that answered 371 people, repeating one text four times, must not be called promotional (a first calibration did).
 
 ## Known limitation
 
