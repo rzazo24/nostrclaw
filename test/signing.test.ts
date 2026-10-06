@@ -4,6 +4,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { nip19 } from 'nostr-tools'
+import { realApi } from '../src/nostr/client.js'
+import type { NostrApi } from '../src/nostr/client.js'
 import type { Config } from '../src/config.js'
 import { call, cfg, connect, type Elicit } from './helpers.js'
 import { FakeSigner, type Behaviour } from './fake-signer.js'
@@ -18,16 +20,16 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const yes: Elicit = () => ({ action: 'accept', content: { publish: true } })
 const no: Elicit = () => ({ action: 'decline' })
 
-interface Opts { identityWaitMs?: number; resumeWaitMs?: number; policy?: Record<string, unknown>; signer?: Partial<Behaviour>; elicit?: Elicit; dirs?: { config: string; state: string }; connected?: boolean }
+interface Opts { api?: NostrApi; extraRelays?: string[]; pingWaitMs?: number; identityWaitMs?: number; resumeWaitMs?: number; policy?: Record<string, unknown>; signer?: Partial<Behaviour>; elicit?: Elicit; dirs?: { config: string; state: string }; connected?: boolean }
 
 async function setup(o: Opts = {}) {
   const config = o.dirs?.config ?? fs.mkdtempSync(path.join(os.tmpdir(), 'nc-config-'))
   const state = o.dirs?.state ?? fs.mkdtempSync(path.join(os.tmpdir(), 'nc-state-'))
   // a person takes longer than 500 ms to decide in these tests; an "always allow" signer answers at once (the wide gap keeps a slow CI machine from confusing them)
   fs.writeFileSync(path.join(config, 'policy.json'), JSON.stringify({ minHumanApprovalMs: 500, signTimeoutMs: 2500, ...o.policy }))
-  const c: Config = cfg({ relays: [relay.url], allowPrivate: true, timeoutMs: 5000, signing: { enabled: true, signerRelays: [relay.url], configDir: config, stateDir: state, identityWaitMs: o.identityWaitMs, resumeWaitMs: o.resumeWaitMs } })
+  const c: Config = cfg({ relays: [relay.url, ...(o.extraRelays ?? [])], allowPrivate: true, timeoutMs: 5000, signing: { enabled: true, signerRelays: [relay.url], configDir: config, stateDir: state, identityWaitMs: o.identityWaitMs, resumeWaitMs: o.resumeWaitMs, pingWaitMs: o.pingWaitMs } })
   const fake = new FakeSigner(o.signer)
-  const conn = await connect(c, undefined, undefined, o.elicit)
+  const conn = await connect(c, o.api, undefined, o.elicit)
   closers.push(async () => { await fake.stop(); await conn.close() })
   const connectSigner = async () => {
     const r = await call(conn.client, 'signer_connect')
@@ -273,6 +275,84 @@ describe.skipIf(!bin)('signing (real relay + pretend NIP-46 signer)', () => {
     expect(fs.readFileSync(saved, 'utf8')).toBe(before) // untouched
     const fresh = await call(b.client, 'signer_connect', { newLink: true })
     expect(fresh.json).toMatchObject({ state: 'connecting' }); expect(fresh.json.nostrconnectUri).toMatch(/^nostrconnect:\/\//)
+  })
+
+  it('checks the signer is awake BEFORE asking the user, and keeps the draft so the user can open the app and try again', async () => {
+    let asked = 0
+    const s = await setup({ elicit: () => { asked++; return { action: 'accept', content: { publish: true } } }, pingWaitMs: 500 })
+    s.fake.behaviour.silentToPing = true // Clave in the background
+    const d = await call(s.client, 'draft_event', { kind: 1, content: 'is anybody awake?' })
+    const first = await call(s.client, 'publish_event', { draftId: d.json.draftId })
+    expect(first.isError).toBe(true)
+    expect(first.text).toMatch(/quick check.*background.*Open the signer app.*same draft.*Nothing was asked, signed or published/s)
+    expect(asked).toBe(0) // the user was never bothered
+    expect(s.fake.signRequests).toBe(0)
+    expect(s.audit().some((e) => e.step === 'preflight-failed')).toBe(true)
+    s.fake.behaviour.silentToPing = false // the user opens the app
+    const second = await call(s.client, 'publish_event', { draftId: d.json.draftId })
+    expect(second.json.published).toBe(true)
+    expect(asked).toBe(1)
+  })
+
+  it('a signer that answers ping with an error is awake: it does not block publishing', async () => {
+    const s = await setup({ elicit: yes, pingWaitMs: 500, signer: { pingError: true } })
+    expect((await s.publishNote('the signer does not know ping')).published!.json.published).toBe(true)
+  })
+
+  it('the hourly limit counts signatures made, not requests that went unanswered; requests have their own cap', async () => {
+    const s = await setup({ elicit: yes, policy: { maxEventsPerHour: 1 }, signer: { decision: 'reject', delayMs: 50 } })
+    for (let i = 0; i < 3; i++) expect((await s.publishNote(`rejected ${i}`)).published!.text).toMatch(/did not sign/) // none of them uses the single publication up
+    const fourth = await s.publishNote('one request too many')
+    expect(fourth.published!.text).toMatch(/3 signature requests.*the cap is 3/)
+    const ok = await setup({ elicit: yes, policy: { maxEventsPerHour: 1 } })
+    expect((await ok.publishNote('the one allowed')).published!.json.published).toBe(true)
+    expect((await ok.publishNote('the second one')).published!.text).toMatch(/1 publications per hour/)
+    expect((await call(ok.client, 'signer_status')).json.policy).toMatchObject({ signedLastHour: 1, signRequestsLastHour: 1 })
+  })
+
+  it('retry_publish re-sends the same signed event only to the relays that failed, with no new signature', async () => {
+    const relay2 = await startRelay(bin!)
+    closers.push(() => relay2.stop())
+    let failRelay2 = 1
+    const api: NostrApi = { ...realApi, publish: async (r, e, o) => (r === relay2.url && failRelay2-- > 0 ? { ok: false, reason: 'blocked: try again later', ms: 1 } : realApi.publish(r, e, o)) }
+    const s = await setup({ elicit: yes, api, extraRelays: [relay2.url], policy: { publishRelays: [relay.url, relay2.url] } })
+    const r = (await s.publishNote('goes to two relays')).published!.json
+    expect(r.published).toBe(true)
+    expect(r.relays).toMatchObject({ [relay.url]: 'ok', [relay2.url]: 'blocked: try again later' })
+    expect(r.retry).toMatch(/retry_publish with this eventId/)
+    const signedBefore = s.fake.signRequests
+    const again = (await call(s.client, 'retry_publish', { eventId: r.eventId })).json
+    expect(again).toMatchObject({ retried: [relay2.url], stillFailing: [], retriesLeft: 2 })
+    expect(again.relays[relay2.url]).toBe('ok')
+    expect(s.fake.signRequests).toBe(signedBefore) // no new signature
+    const onRelay2 = (await call(s.client, 'recent_events', { relay: relay2.url, kinds: [1] })).json.untrusted.events as { id: string }[]
+    expect(onRelay2.map((e) => e.id)).toContain(r.eventId)
+    expect((await call(s.client, 'retry_publish', { eventId: r.eventId })).json.note).toMatch(/nothing to do/)
+    expect(s.audit().some((e) => e.step === 'retried')).toBe(true)
+  })
+
+  it('if every relay refuses, the event stays signed and can be retried; the draft cannot be signed twice', async () => {
+    let failAll = 1
+    const api: NostrApi = { ...realApi, publish: async (r, e, o) => (failAll-- > 0 ? { ok: false, reason: 'rate-limited: slow down', ms: 1 } : realApi.publish(r, e, o)) }
+    const s = await setup({ elicit: yes, api })
+    const d = await call(s.client, 'draft_event', { kind: 1, content: 'every relay says no' })
+    const first = await call(s.client, 'publish_event', { draftId: d.json.draftId })
+    expect(first.isError).toBe(true)
+    const id = first.text.match(/eventId ([0-9a-f]{64})/)![1]!
+    expect(first.text).toMatch(/kept for 15 minutes.*without a new signature/s)
+    expect((await call(s.client, 'publish_event', { draftId: d.json.draftId })).text).toMatch(/does not exist or has expired/) // no second signature
+    expect((await call(s.client, 'retry_publish', { eventId: id })).json.stillFailing).toEqual([])
+    expect((await s.onRelay([1])).map((e) => e.content)).toContain('every relay says no')
+    expect(s.fake.signRequests).toBe(1)
+  })
+
+  it('retry_publish cannot send anything it did not sign itself, and gives up after 3 retries', async () => {
+    const s = await setup({ elicit: yes, api: { ...realApi, publish: async () => ({ ok: false, reason: 'blocked', ms: 1 }) } })
+    expect((await call(s.client, 'retry_publish', { eventId: 'ab'.repeat(32) })).text).toMatch(/no signed event with that id/)
+    const d = await call(s.client, 'draft_event', { kind: 1, content: 'never accepted' })
+    const id = (await call(s.client, 'publish_event', { draftId: d.json.draftId })).text.match(/eventId ([0-9a-f]{64})/)![1]!
+    for (let i = 0; i < 3; i++) expect((await call(s.client, 'retry_publish', { eventId: id })).json.retriesLeft).toBe(2 - i)
+    expect((await call(s.client, 'retry_publish', { eventId: id })).text).toMatch(/already retried 3 times/)
   })
 
   it('a note from the network that tells the assistant to publish cannot make it publish: only the user\'s answer counts', async () => {

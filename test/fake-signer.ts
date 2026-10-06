@@ -14,6 +14,10 @@ export interface Behaviour {
   wrongKey?: boolean
   /** Accept the connection but never answer get_public_key (a signer app suspended in the background). */
   silentAboutIdentity?: boolean
+  /** Do not answer `ping` (a signer app suspended in the background). */
+  silentToPing?: boolean
+  /** Answer `ping` with an error instead of "pong" (a signer that does not know the method: it is awake, though). */
+  pingError?: boolean
 }
 
 export class FakeSigner {
@@ -65,7 +69,9 @@ export class FakeSigner {
     this.seen.push({ method: req.method, params: req.params })
     switch (req.method) {
       case 'connect': return this.reply(ev.pubkey, { id: req.id, result: 'ack' })
-      case 'ping': return this.reply(ev.pubkey, { id: req.id, result: 'pong' })
+      case 'ping':
+        if (this.behaviour.silentToPing) return undefined
+        return this.reply(ev.pubkey, this.behaviour.pingError ? { id: req.id, error: 'unsupported method ping' } : { id: req.id, result: 'pong' })
       case 'get_public_key': return this.behaviour.silentAboutIdentity ? undefined : this.reply(ev.pubkey, { id: req.id, result: this.userPk })
       case 'sign_event': {
         const b = this.behaviour

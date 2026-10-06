@@ -54,10 +54,11 @@ Desactivado por defecto. Se activa con `NOSTRCLAW_ENABLE_SIGNING=1` y aparecen c
 | Herramienta | Qué hace |
 |---|---|
 | `signer_connect` | Reanuda la sesión guardada o devuelve un enlace `nostrconnect://` (y el enlace universal de Clave) para que lo abras en tu firmador. Con `bunker` se conecta a una URI `bunker://` |
-| `signer_status` | Estado de la conexión, con qué npub firma, la política vigente y las firmas pedidas en la última hora |
+| `signer_status` | Estado de la conexión, con qué npub firma, la política vigente y las firmas hechas y pedidas en la última hora |
 | `signer_disconnect` | Cierra la sesión y borra la clave de la aplicación guardada |
 | `draft_event` | Prepara un evento **sin firmar** y lo comprueba contra tu política. No publica nada |
-| `publish_event` | Recibe el id de un borrador, **te pide confirmación**, hace que tu firmador lo firme y lo envía a tus relés |
+| `publish_event` | Recibe el id de un borrador, primero comprueba que el firmador está despierto (un `ping` rápido: si Clave está en segundo plano lo dice *antes* de preguntarte nada), luego **te pide confirmación**, hace que tu firmador lo firme y lo envía a tus relés |
+| `retry_publish` | Reenvía un evento que nostrclaw firmó él mismo (se guarda 15 minutos) a los relés que no lo aceptaron, **sin nueva firma**; máximo 3 reintentos; no puede enviar nada más |
 
 Cómo queda todo bajo tu control:
 

@@ -75,7 +75,7 @@ After signing, the returned event is re-checked: valid id and signature, signed 
 | Field | Default | |
 |---|---|---|
 | `allowedKinds` | `[1, 7]` | Notes and reactions. Profile (`0`), lists (`3`, `10002`), deletions (`5`) and anything else must be added by the user |
-| `maxEventsPerHour` | `5` | Counts publications attempted (signature requested), not only successful ones |
+| `maxEventsPerHour` | `5` | Counts signatures actually **made**; a request that expired unanswered does not use one up. Requests are capped separately at three times this number (at least 3) so a stuck signer is not asked forever |
 | `maxContentChars` | `1000` | |
 | `maxTags` | `20` | |
 | `publishRelays` | the first configured relay | Where events may be sent; each must be on the analysis allowlist |
@@ -123,6 +123,14 @@ event id, kind, content hash, relays and result. No content, no secrets, no URIs
   in Clave as "pending" with nothing the user could do with it, and expired unsigned. Every signature that worked was made with Clave already open on screen.
   So: resuming works with a tap on the notification; **sign with Clave in the foreground**, ideally with Claude Code on a computer and the phone used only for Clave.
   Not tested: whether a *medium trust* connection would answer `get_public_key` silently; it would also auto-approve kinds 1, 6 and 7, which is the unsafe choice.
+
+## Added in 0.6.0
+
+- **Quick check before the question.** `publish_event` sends a `ping` (Clave documents it) before it asks the user anything. A signer that answers, even with an
+  error, is awake; silence means it is probably in the background, and the tool says so, keeps the draft and asks nothing. This saves a five-minute wait.
+- **Retry without re-signing.** The event nostrclaw signed is kept in memory for 15 minutes. `retry_publish` sends it again only to the policy relays that did
+  not accept it (up to 3 times). It takes just an event id, only knows events nostrclaw itself signed, and still publishes only to the policy's relays, so it is not
+  a generic rebroadcast. If every relay refused, the draft is spent (no second signature) and the error says how to retry.
 
 ## Known limitation
 

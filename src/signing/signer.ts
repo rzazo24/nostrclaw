@@ -194,6 +194,12 @@ export class SignerManager {
     return { event, ms: Date.now() - t0 }
   }
 
+  /** Is the signer awake? True when it answers a `ping` (even with an error: it is there), false when nothing comes back within `ms`. */
+  async ping(ms: number): Promise<boolean> {
+    if (this.state !== 'connected' || !this.signer) return false
+    try { await withTimeout(this.signer.ping(), ms, 'the signer'); return true } catch (e) { return !/did not answer within/.test(asError(e).message) }
+  }
+
   private async dropSigner(): Promise<void> {
     try { await this.signer?.close() } catch { /* already closed */ }
     this.signer = undefined

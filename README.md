@@ -54,10 +54,11 @@ Off by default. Enable it with `NOSTRCLAW_ENABLE_SIGNING=1` and five more tools 
 | Tool | What it does |
 |---|---|
 | `signer_connect` | Resumes the saved session, or returns a `nostrconnect://` link (and Clave's universal link) for you to open in your signer. `bunker` connects to a `bunker://` URI instead |
-| `signer_status` | Connection state, which npub it signs as, the policy in force, signatures requested in the last hour |
+| `signer_status` | Connection state, which npub it signs as, the policy in force, signatures made and requested in the last hour |
 | `signer_disconnect` | Closes the session and deletes the saved app key |
 | `draft_event` | Prepares an **unsigned** event and checks it against your policy. Publishes nothing |
-| `publish_event` | Takes a draft id, **asks you to confirm**, has your signer sign it and sends it to your relays |
+| `publish_event` | Takes a draft id, first checks the signer is awake (a quick `ping`: if Clave is in the background it says so *before* asking you anything), then **asks you to confirm**, has your signer sign it and sends it to your relays |
+| `retry_publish` | Re-sends an event nostrclaw itself signed (kept 15 minutes) to the relays that did not accept it, **with no new signature**; at most 3 retries; it cannot send anything else |
 
 How it stays under your control:
 

@@ -17,7 +17,7 @@
 import os from 'node:os'
 import path from 'node:path'
 
-export const VERSION = '0.5.0'
+export const VERSION = '0.6.0'
 export const DEFAULT_RELAY = 'wss://relay.hivescope.xyz'
 /** Clave (iOS) only receives background signing requests through this relay. */
 export const POWR_RELAY = 'wss://relay.powr.build'
@@ -39,6 +39,8 @@ export interface SigningConfig {
   identityWaitMs?: number
   /** How long resuming a saved session keeps retrying while the signer app wakes up (default 150 s; tests shorten it). */
   resumeWaitMs?: number
+  /** How long the quick "is the signer awake?" check before a publication waits (default 10 s; tests shorten it). */
+  pingWaitMs?: number
 }
 
 function signerRelays(env: Record<string, string | undefined>, relays: string[]): string[] {

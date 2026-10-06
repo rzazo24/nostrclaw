@@ -3,7 +3,7 @@
 // nothing the model sees can be replayed to publish the event by other means.
 import { createHash, randomBytes } from 'node:crypto'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
-import { nip19, verifyEvent } from 'nostr-tools'
+import { nip19, verifyEvent, type VerifiedEvent } from 'nostr-tools'
 import { z } from 'zod'
 import { kindName } from '../analysis.js'
 import type { Config } from '../config.js'
@@ -41,12 +41,14 @@ const CLAVE = 'https://clave.casa/connect/?uri='
 export function registerSigningTools(server: McpServer, cfg: Config, api: NostrApi, ctx: SigningContext, clock: () => number): void {
   const { policy, audit, signer } = ctx
   const drafts = new Map<string, Draft>()
-  const live = () => { for (const [id, d] of drafts) if (d.expires <= clock()) drafts.delete(id) }
+  // what nostrclaw itself signed and published, kept a few minutes so a relay that failed can be retried without a new signature
+  const sent = new Map<string, { event: VerifiedEvent; results: Record<string, string>; kind: number; expires: number; retries: number }>()
+  const live = () => { for (const [id, d] of drafts) if (d.expires <= clock()) drafts.delete(id); for (const [id, s] of sent) if (s.expires <= clock()) sent.delete(id) }
   const npub = () => (signer.userPubkey ? nip19.npubEncode(signer.userPubkey) : undefined)
   const policySummary = () => ({
     allowedKinds: policy.allowedKinds, maxEventsPerHour: policy.maxEventsPerHour, maxContentChars: policy.maxContentChars,
     publishRelays: policy.publishRelays, minHumanApprovalMs: policy.minHumanApprovalMs,
-    signRequestsLastHour: audit.signRequestsLastHour(),
+    signedLastHour: audit.signedLastHour(), signRequestsLastHour: audit.signRequestsLastHour(),
   })
   const status = () => ({
     state: signer.state, waitingFor: signer.state === 'connecting' ? signer.phase : undefined, signingAs: npub(), signerRelays: signer.relays.length ? signer.relays : cfg.signing.signerRelays,
@@ -132,8 +134,18 @@ export function registerSigningTools(server: McpServer, cfg: Config, api: NostrA
 
     const reason = checkDraft(policy, draft.template)
     if (reason) refuse(reason)
-    if (audit.signRequestsLastHour() >= policy.maxEventsPerHour) refuse(`the policy allows ${policy.maxEventsPerHour} publications per hour and that limit has been reached; try again later`)
+    // the limit is about signatures actually made; a request that expired unanswered does not use one up. Requests are capped separately so a stuck signer is not pestered forever.
+    if (audit.signedLastHour() >= policy.maxEventsPerHour) refuse(`the policy allows ${policy.maxEventsPerHour} publications per hour and that limit has been reached; try again later`)
+    const requestCap = Math.max(3, policy.maxEventsPerHour * 3)
+    if (audit.signRequestsLastHour() >= requestCap) refuse(`${audit.signRequestsLastHour()} signature requests were made in the last hour and most were not answered (the cap is ${requestCap}); check the signer and try again later`)
     if (signer.state !== 'connected' || !signer.userPubkey) refuse('no signer is connected: use signer_connect first')
+
+    // a phone signer in the background does not answer: find out BEFORE asking the user to confirm, so they are not left waiting minutes for nothing
+    const pingMs = cfg.signing.pingWaitMs ?? 10_000
+    if (!(await signer.ping(pingMs))) {
+      audit.log({ step: 'preflight-failed', draftId, kind: draft.template.kind, detail: `no answer to a quick check within ${Math.round(pingMs / 1000)} s` })
+      throw new Error(`the signer did not answer a quick check within ${Math.round(pingMs / 1000)} s, so it is probably in the background. Open the signer app (Clave) on screen, or tap its notification, and call publish_event again with the same draft. Nothing was asked, signed or published`)
+    }
 
     // 1) the human decision, through a channel the model cannot write to
     const canAsk = !!server.server.getClientCapabilities()?.elicitation
@@ -186,9 +198,11 @@ export function registerSigningTools(server: McpServer, cfg: Config, api: NostrA
       warnings.push(`The signer answered in ${ms} ms, faster than a person can decide, so it seems to approve automatically (for example Clave's "medium trust"). The confirmation you just gave protects publishing through this tool, but anything that can read the app key saved on this machine could ask that signer for signatures with no prompt at all. Prefer "low trust" (manual approval) in the signer.`)
     }
     audit.log({ step: 'signed', draftId, eventId: signed.id, kind: t.kind, signMs: ms, approval, detail: warnings.length ? 'signer approved faster than a person' : undefined })
+    const record = { event: signed, results: {} as Record<string, string>, kind: t.kind, expires: clock() + 900, retries: 0 }
+    sent.set(signed.id, record)
 
     // 4) publication
-    const results: Record<string, string> = {}
+    const results = record.results
     await Promise.all(policy.publishRelays.map(async (r) => {
       try {
         const url = resolveRelay(r, cfg)
@@ -198,8 +212,35 @@ export function registerSigningTools(server: McpServer, cfg: Config, api: NostrA
     }))
     const accepted = Object.values(results).some((v) => v === 'ok')
     audit.log({ step: accepted ? 'published' : 'refused', draftId, eventId: signed.id, kind: t.kind, contentHash: draft.hash, relays: results, approval, signMs: ms })
-    if (!accepted) throw new Error(`no relay accepted the event: ${JSON.stringify(results)}`)
-    drafts.delete(draftId)
-    return { published: true, eventId: signed.id, noteId: nip19.noteEncode(signed.id), signedAs: npub(), relays: results, approval, signerMs: ms, warnings: warnings.length ? warnings : undefined }
+    drafts.delete(draftId) // it is signed now: asking the user again for the same draft would make a second signature
+    if (!accepted) throw new Error(`no relay accepted the event: ${JSON.stringify(results)}. It is signed and kept for 15 minutes: call retry_publish with eventId ${signed.id} to send it again without a new signature`)
+    const failed = Object.entries(results).filter(([, v]) => v !== 'ok').map(([u]) => u)
+    return {
+      published: true, eventId: signed.id, noteId: nip19.noteEncode(signed.id), signedAs: npub(), relays: results, approval, signerMs: ms, warnings: warnings.length ? warnings : undefined,
+      retry: failed.length ? `${failed.length} relay(s) did not accept it. retry_publish with this eventId sends the same signed event to them again, with no new signature (kept for 15 minutes).` : undefined,
+    }
+  }))
+  server.registerTool('retry_publish', {
+    title: 'Retry publishing to the relays that failed',
+    description: 'Sends an event nostrclaw ALREADY signed and published (with publish_event, in the last 15 minutes) again to the policy relays that did not accept it, with no new signature. It cannot send anything else: only events this server itself signed are kept, and only to the relays the policy allows. At most 3 retries per event.',
+    inputSchema: { eventId: z.string().regex(/^[0-9a-f]{64}$/i, 'expected a 64-character hex event id') },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  }, guard(async ({ eventId }: { eventId: string }) => {
+    live()
+    const rec = sent.get(eventId.toLowerCase())
+    if (!rec) throw new Error('nostrclaw has no signed event with that id to retry: it only keeps what it signed itself, for 15 minutes. Make a new draft to publish again')
+    const todo = policy.publishRelays.map((r) => resolveRelay(r, cfg)).filter((u) => rec.results[u] !== 'ok')
+    if (!todo.length) return { eventId: rec.event.id, relays: rec.results, note: 'every relay already accepted it; nothing to do' }
+    if (rec.retries >= 3) { audit.log({ step: 'refused', eventId: rec.event.id, kind: rec.kind, detail: 'too many retries' }); throw new Error('this event was already retried 3 times; make a new draft if you still want it published') }
+    rec.retries++
+    await Promise.all(todo.map(async (url) => {
+      try {
+        const res = await api.publish(url, rec.event, { timeoutMs: cfg.timeoutMs })
+        rec.results[url] = res.ok ? 'ok' : cleanText(res.reason || 'rejected', 200)
+      } catch (e) { rec.results[url] = cleanText(e instanceof Error ? e.message : String(e), 200) }
+    }))
+    const stillFailing = todo.filter((u) => rec.results[u] !== 'ok')
+    audit.log({ step: 'retried', eventId: rec.event.id, kind: rec.kind, relays: rec.results, detail: `${todo.length} relay(s) tried, ${stillFailing.length} still failing` })
+    return { eventId: rec.event.id, noteId: nip19.noteEncode(rec.event.id), relays: rec.results, retried: todo, stillFailing, retriesLeft: 3 - rec.retries }
   }))
 }
