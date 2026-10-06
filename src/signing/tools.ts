@@ -98,7 +98,7 @@ export function registerSigningTools(server: McpServer, cfg: Config, api: NostrA
     inputSchema: {
       kind: z.number().int().min(0).max(65535).describe('Event kind: 1 = note, 7 = reaction.'),
       content: z.string().max(20000).describe('The text. For a reaction use "+" or an emoji.'),
-      tags: z.array(z.array(z.string().max(300)).min(1).max(6)).max(100).default([]).describe('Optional tags, e.g. ["e", "<event id>"] to reply or react, ["p", "<pubkey>"] to mention. For a reaction use just the e and p tags: a signer (Clave) left a reaction with an extra k tag unanswered.'),
+      tags: z.array(z.array(z.string().max(300)).min(1).max(6)).max(100).default([]).describe('Optional tags, e.g. ["e", "<event id>"] to reply or react, ["p", "<pubkey>"] to mention. For a reaction (NIP-25) use e (the event), p (its author) and optionally k (its kind).'),
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   }, guard(async (a: { kind: number; content: string; tags: string[][] }) => {

@@ -107,8 +107,8 @@ event id, kind, content hash, relays and result. No content, no secrets, no URIs
 - With *low trust* Clave asks for every signature: a note was approved in 4.6 s and a reaction in 3.8 s (a person, so the speed check passes). *Medium trust*
   auto-approves kinds 1, 6 and 7; that is faster but is the unsafe choice described below.
 - A first reaction that carried an extra `["k","1"]` tag stayed "pending" in Clave even after the user approved it (nothing came back, nostrclaw timed out and
-  published nothing); the same reaction with only `e` and `p` tags signed at once. It was not isolated whether the tag or having Clave on screen made the
-  difference, so `draft_event`'s description recommends plain `e`/`p` tags for reactions.
+  published nothing). Isolated later: the same reaction WITH the `k` tag, sent while Clave was open on screen, signed in 3.8 s and was accepted by four relays. So
+  the tag was not the problem: Clave had not been on screen (a suspended Clave never answers, and it never says so).
 
 - Resuming a saved session needs Clave **on screen at the moment of the call**: a suspended Clave does not answer, and the old behaviour (one try of 75 s, then a
   new link) looked like an expired session. Now `signer_connect` keeps asking for about 2.5 minutes (so the user can open the app while it waits), never swaps
