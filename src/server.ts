@@ -10,6 +10,7 @@ import { createSigningContext, registerSigningTools, type SigningContext } from 
 import { coverage, eventsPerHour, isStoredKind } from './compare.js'
 import { cleanText, resolveRelay, toHexPubkey, UNTRUSTED_NOTE } from './safety.js'
 import { NO_FACTS, pickCandidates, triage, WEIGHTS, type AuthorFacts } from './triage.js'
+import { behaviourOf, judge, REVIEW, VERDICT_ORDER } from './review.js'
 import { engagersOf, ESTABLISHED_FOLLOWERS, followedBySeeds, followersOf, newestPerAuthor, scoreTrust, TRUST_WEIGHTS } from './trust.js'
 
 export const INSTRUCTIONS = [
@@ -403,6 +404,61 @@ export function createServer(cfg: Config, api: NostrApi = realApi, clock: () => 
     }
   }))
 
+  /** The same question to every given relay; answers merged and de-duplicated. A relay that fails is skipped, and the asker remembers it. */
+  const makeAsker = (urls: string[]) => {
+    let incomplete = false
+    const askAll = async (filter: Filter, max: number): Promise<Event[]> => {
+      const rs = await Promise.allSettled(urls.map((u) => query(u, filter, max)))
+      const seen = new Map<string, Event>()
+      for (const r of rs) { if (r.status === 'rejected' || !r.value.eose) incomplete = true; if (r.status === 'fulfilled') for (const e of r.value.events) seen.set(e.id, e) }
+      return [...seen.values()]
+    }
+    return { askAll, incomplete: () => incomplete }
+  }
+  type Asker = ReturnType<typeof makeAsker>
+  const chunks = <T>(xs: T[], n: number): T[][] => { const o: T[][] = []; for (let i = 0; i < xs.length; i += n) o.push(xs.slice(i, i + n)); return o }
+  const oldestOf = (events: Event[]): Map<string, number> => {
+    const m = new Map<string, number>()
+    for (const e of events) m.set(e.pubkey, Math.min(m.get(e.pubkey) ?? Infinity, e.created_at))
+    return m
+  }
+  const decodeKey = (x: string) => toHexPubkey(x, (v) => { try { const d = nip19.decode(v); return d.type === 'npub' ? d.data : null } catch { return null } })
+  const parseEventId = (raw: string): string => {
+    let id = raw.trim().toLowerCase()
+    if (/^(note1|nevent1)/.test(id)) { try { const d = nip19.decode(id); id = (d.type === 'note' ? d.data : d.type === 'nevent' ? d.data.id : '') } catch { id = '' } }
+    if (!/^[0-9a-f]{64}$/.test(id)) throw new Error('not a valid event id (use 64-character hex, note1… or nevent1…)')
+    return id
+  }
+
+  /** The web-of-trust facts and score of each key, from what the relays hold (followers, followers of followers, closeness to `trusted`, interactions, age, profile). */
+  async function trustFor(ask: Asker, keys: string[], trusted: string[], now: number) {
+    const perChunk = await Promise.all(chunks(keys, 5).map(async (c) => ({
+      follows: await ask.askAll({ kinds: [3], '#p': c, limit: 500 }, 500),
+      engage: await ask.askAll({ kinds: [1, 6, 7, 16], '#p': c, limit: 500 }, 500),
+      own: await ask.askAll({ authors: c, limit: 500 }, 500),
+      profiles: await ask.askAll({ kinds: [0], authors: c, limit: 100 }, 100), // not among the newest 500 events of a busy author
+    })))
+    const follows = perChunk.flatMap((c) => c.follows), engage = perChunk.flatMap((c) => c.engage)
+    const ownEvents = perChunk.flatMap((c) => c.own), profileEvents = perChunk.flatMap((c) => c.profiles)
+    const followers = followersOf(follows, keys)
+    // second level: how many keys follow each follower (bounded)
+    const followerUnion = [...new Set([...followers.values()].flatMap((x) => [...x]))].slice(0, 200)
+    const second = (await Promise.all(chunks(followerUnion, 50).map((c) => ask.askAll({ kinds: [3], '#p': c, limit: 500 }, 500)))).flat()
+    const followersOfFollowers = followersOf(second, followerUnion)
+    // the trusted keys' follow lists
+    const seedLists = trusted.length ? await ask.askAll({ kinds: [3], authors: trusted, limit: 50 }, 50) : []
+    const followedByTrusted = followedBySeeds(seedLists, trusted)
+    const oldest = oldestOf(ownEvents)
+    const profiles = newestPerAuthor(profileEvents)
+    return keys.map((pk) => {
+      const fs = followers.get(pk) ?? new Set<string>()
+      const established = [...fs].filter((f) => (followersOfFollowers.get(f)?.size ?? 0) >= ESTABLISHED_FOLLOWERS).length
+      const seedDistance = trusted.includes(pk) ? 0 as const : followedByTrusted.has(pk) ? 1 as const : [...fs].some((f) => followedByTrusted.has(f)) ? 2 as const : undefined
+      const facts = { followers: fs.size, establishedFollowers: established, seedDistance, engagers: engagersOf(engage, pk), oldestSeen: oldest.get(pk), hasProfile: profiles.has(pk), now }
+      return { pubkey: pk, facts, trust: scoreTrust(facts), own: ownEvents.filter((e) => e.pubkey === pk) }
+    })
+  }
+
   server.registerTool('trust_score', {
     title: 'Trust score for keys',
     description: 'Scores how much the network vouches for keys, using what the configured relays hold about who follows whom: how many keys follow it, how many of those followers are themselves followed (established), how close it is to keys YOU trust (pass them as `trusted`: a trusted key following it counts most), how many different keys interacted with it, and how long it has been seen. Give `pubkeys`, or leave them out to examine the NEW keys of a recent window (keys not seen on any relay before it). A web-of-trust aid, not a verdict or an identity check: keys can follow each other in rings, and "unknown" means nothing vouches for it here, not that it is bad.',
@@ -416,69 +472,33 @@ export function createServer(cfg: Config, api: NostrApi = realApi, clock: () => 
   }, guard(async (a: { pubkeys?: string[]; trusted?: string[]; recentHours: number; relays?: string[] }) => {
     const urls = [...new Set((a.relays?.length ? a.relays : cfg.relays).map((r) => resolveRelay(r, cfg)))]
     const now = clock()
-    const decode = (x: string) => toHexPubkey(x, (v) => { try { const d = nip19.decode(v); return d.type === 'npub' ? d.data : null } catch { return null } })
-    const trusted = [...new Set((a.trusted ?? []).map(decode))]
-    let incomplete = false
-    /** The same question to every relay; answers merged and de-duplicated. A relay that fails is skipped (and noted). */
-    const askAll = async (filter: Filter, max: number): Promise<Event[]> => {
-      const rs = await Promise.allSettled(urls.map((u) => query(u, filter, max)))
-      const seen = new Map<string, Event>()
-      for (const r of rs) { if (r.status === 'rejected' || !r.value.eose) incomplete = true; if (r.status === 'fulfilled') for (const e of r.value.events) seen.set(e.id, e) }
-      return [...seen.values()]
-    }
-    const chunks = <T>(xs: T[], n: number): T[][] => { const o: T[][] = []; for (let i = 0; i < xs.length; i += n) o.push(xs.slice(i, i + n)); return o }
-    const oldestOf = (events: Event[]): Map<string, number> => {
-      const m = new Map<string, number>()
-      for (const e of events) m.set(e.pubkey, Math.min(m.get(e.pubkey) ?? Infinity, e.created_at))
-      return m
-    }
+    const trusted = [...new Set((a.trusted ?? []).map(decodeKey))]
+    const ask = makeAsker(urls)
 
     // which keys: given, or the NEW ones of the window (their oldest known event is inside it)
-    let keys: string[], discovered = false, ownEvents: Event[] = []
+    let keys: string[], discovered = false
     const since = Math.floor(now - a.recentHours * 3600)
-    if (a.pubkeys?.length) keys = [...new Set(a.pubkeys.map(decode))]
+    if (a.pubkeys?.length) keys = [...new Set(a.pubkeys.map(decodeKey))]
     else {
       discovered = true
       // candidates come from the FIRST relay only (normally yours): a busy public relay's newest events are seconds old and would flood the list with strangers.
       // Whether a candidate is really new is then judged across all the relays.
       const recent = (await query(urls[0]!, { since, limit: Math.min(400, cfg.maxEvents) }, Math.min(400, cfg.maxEvents))).events.filter((e) => isStoredKind(e.kind))
       const candidates = [...new Set(recent.sort((x, y) => y.created_at - x.created_at).map((e) => e.pubkey))].slice(0, 40)
-      const ages = oldestOf((await Promise.all(chunks(candidates, 5).map((c) => askAll({ authors: c, limit: 500 }, 500)))).flat())
+      const ages = oldestOf((await Promise.all(chunks(candidates, 5).map((c) => ask.askAll({ authors: c, limit: 500 }, 500)))).flat())
       keys = candidates.filter((k) => (ages.get(k) ?? now) >= since).slice(0, 10)
     }
     if (!keys.length) return { relays: urls, discovered, examined: 0, note: 'No keys to score: no key appeared for the first time in the window.' }
 
-    const perChunk = await Promise.all(chunks(keys, 5).map(async (c) => ({
-      follows: await askAll({ kinds: [3], '#p': c, limit: 500 }, 500),
-      engage: await askAll({ kinds: [1, 6, 7, 16], '#p': c, limit: 500 }, 500),
-      own: await askAll({ authors: c, limit: 500 }, 500),
-      profiles: await askAll({ kinds: [0], authors: c, limit: 100 }, 100), // not among the newest 500 events of a busy author
-    })))
-    const follows = perChunk.flatMap((c) => c.follows), engage = perChunk.flatMap((c) => c.engage); ownEvents = perChunk.flatMap((c) => c.own); const profileEvents = perChunk.flatMap((c) => c.profiles)
-    const followers = followersOf(follows, keys)
-    // second level: how many keys follow each follower (bounded)
-    const followerUnion = [...new Set([...followers.values()].flatMap((s) => [...s]))].slice(0, 200)
-    const second = (await Promise.all(chunks(followerUnion, 50).map((c) => askAll({ kinds: [3], '#p': c, limit: 500 }, 500)))).flat()
-    const followersOfFollowers = followersOf(second, followerUnion)
-    // the trusted keys' follow lists
-    const seedLists = trusted.length ? await askAll({ kinds: [3], authors: trusted, limit: 50 }, 50) : []
-    const followedByTrusted = followedBySeeds(seedLists, trusted)
-    const oldest = oldestOf(ownEvents)
-    const profiles = newestPerAuthor(profileEvents)
-
-    const out = keys.map((pk) => {
-      const fs = followers.get(pk) ?? new Set<string>()
-      const established = [...fs].filter((f) => (followersOfFollowers.get(f)?.size ?? 0) >= ESTABLISHED_FOLLOWERS).length
-      const seedDistance = trusted.includes(pk) ? 0 as const : followedByTrusted.has(pk) ? 1 as const : [...fs].some((f) => followedByTrusted.has(f)) ? 2 as const : undefined
-      const facts = { followers: fs.size, establishedFollowers: established, seedDistance, engagers: engagersOf(engage, pk), oldestSeen: oldest.get(pk), hasProfile: profiles.has(pk), now }
-      const sc = scoreTrust(facts)
-      return { pubkey: pk, npub: nip19.npubEncode(pk), ...sc, facts: { ...facts, now: undefined, oldestSeen: facts.oldestSeen ? new Date(facts.oldestSeen * 1000).toISOString() : undefined } }
-    }).sort((x, y) => y.score - x.score)
+    const out = (await trustFor(ask, keys, trusted, now)).map((r) => ({
+      pubkey: r.pubkey, npub: nip19.npubEncode(r.pubkey), ...r.trust,
+      facts: { ...r.facts, now: undefined, oldestSeen: r.facts.oldestSeen ? new Date(r.facts.oldestSeen * 1000).toISOString() : undefined },
+    })).sort((x, y) => y.score - x.score)
     const byLevel = { established: 0, some: 0, unknown: 0 }
     for (const o of out) byLevel[o.level]++
     return {
       relays: urls, discovered, windowHours: discovered ? a.recentHours : undefined, examined: out.length, byLevel,
-      trustedKeysGiven: trusted.length, incomplete: incomplete || undefined,
+      trustedKeysGiven: trusted.length, incomplete: ask.incomplete() || undefined,
       keys: out, weights: TRUST_WEIGHTS,
       caveats: [
         'Follower counts are lower bounds: they come only from the follow lists these relays hold, and a key may be followed widely elsewhere.',
@@ -486,6 +506,58 @@ export function createServer(cfg: Config, api: NostrApi = realApi, clock: () => 
         trusted.length ? undefined : 'No trusted keys were given, so the closeness-to-a-trusted-key points are unavailable: pass your own key in `trusted` for a much stronger signal.',
         '"oldest seen" is the oldest of the newest ~500 events read per group of keys, not the key\'s real age. "unknown" means nothing vouches for the key on these relays, not that it is bad.',
       ].filter(Boolean),
+    }
+  }))
+
+  server.registerTool('review_interactions', {
+    title: 'Review who interacts with a note',
+    description: 'For one note: who replied to it, reacted to it or reposted it on the configured relays, and for each distinct person a verdict — likely-bot, suspicious, unknown or established — that combines what the key DOES (the same text posted again and again, links in most of its notes, bursts) with its web-of-trust score. Behaviour outweighs trust: a spam bot can be followed by other bots and still look "somewhat trusted". Replies are examined first. A triage aid, not a verdict; give your own key in `trusted` for a much better signal.',
+    inputSchema: {
+      eventId: z.string().describe('The note: 64-character hex, or note1… / nevent1….'),
+      trusted: z.array(z.string()).max(10).optional().describe('Keys you trust (hex or npub), e.g. your own.'),
+      maxAuthors: z.number().int().min(1).max(30).default(20).describe('Most distinct people to examine (replies first).'),
+      relays: z.array(z.string()).min(1).max(8).optional().describe('Relays to read from; each must be configured. Default: all configured.'),
+    },
+    annotations: READ_ONLY,
+  }, guard(async (a: { eventId: string; trusted?: string[]; maxAuthors: number; relays?: string[] }) => {
+    const urls = [...new Set((a.relays?.length ? a.relays : cfg.relays).map((r) => resolveRelay(r, cfg)))]
+    const now = clock(), id = parseEventId(a.eventId)
+    const trusted = [...new Set((a.trusted ?? []).map(decodeKey))]
+    const ask = makeAsker(urls)
+    const [targets, refsRaw] = await Promise.all([ask.askAll({ ids: [id], limit: 1 }, 1), ask.askAll({ '#e': [id], limit: 500 }, 500)])
+    const target = targets.find((e) => e.id === id)
+    const refs = refsRaw.filter((e) => [1, 6, 7, 16, 9735].includes(e.kind) && e.tags.some((t) => t[0] === 'e' && t[1] === id))
+    const zaps = refs.filter((e) => e.kind === 9735).length // a zap receipt is signed by the lightning service, not by the person who zapped
+    const mine = refs.filter((e) => e.kind !== 9735 && e.pubkey !== target?.pubkey)
+    const byAuthor = new Map<string, Event[]>()
+    for (const e of mine) byAuthor.set(e.pubkey, [...(byAuthor.get(e.pubkey) ?? []), e])
+    const rank = (es: Event[]) => (es.some((e) => e.kind === 1) ? 0 : es.some((e) => e.kind === 6 || e.kind === 16) ? 1 : 2)
+    const authors = [...byAuthor.entries()].sort((x, y) => rank(x[1]) - rank(y[1]) || Math.max(...y[1].map((e) => e.created_at)) - Math.max(...x[1].map((e) => e.created_at))).map(([pk]) => pk)
+    const examined = authors.slice(0, a.maxAuthors)
+    const rows = examined.length ? await trustFor(ask, examined, trusted, now) : []
+    const people = rows.map((r) => {
+      const b = behaviourOf(r.own), j = judge(b, r.trust), theirs = byAuthor.get(r.pubkey)!
+      return {
+        npub: nip19.npubEncode(r.pubkey), verdict: j.verdict, reasons: j.reasons, trust: { score: r.trust.score, level: r.trust.level },
+        interactions: theirs.map((e) => ({ kind: e.kind, kindName: kindName(e.kind), id: e.id })),
+        behaviour: { eventsSeen: b.events, notes: b.notes, linkFraction: Math.round(b.linkFraction * 100) / 100, sameTextMax: b.maxRepeats, burstEventsPerMinute: b.burstEvents },
+        untrusted: { sample: theirs.slice(0, 2).map((e) => cleanText(e.content, 160)) },
+      }
+    }).sort((x, y) => VERDICT_ORDER[x.verdict] - VERDICT_ORDER[y.verdict] || y.trust.score - x.trust.score)
+    const byVerdict: Record<string, number> = { 'likely-bot': 0, suspicious: 0, unknown: 0, established: 0 }
+    for (const p of people) byVerdict[p.verdict]!++
+    const count = (ks: number[]) => mine.filter((e) => ks.includes(e.kind)).length
+    return {
+      relays: urls, foundTarget: !!target, target: target ? { id, author: nip19.npubEncode(target.pubkey), ageMinutes: Math.max(0, Math.round((now - target.created_at) / 60)) } : undefined,
+      interactions: { replies: count([1]), reactions: count([7]), reposts: count([6, 16]), zaps, distinctPeople: authors.length },
+      examined: people.length, notExamined: authors.length - people.length, byVerdict, incomplete: ask.incomplete() || undefined,
+      people, thresholds: REVIEW,
+      caveats: [
+        'Behaviour comes from the newest ~500 events the relays return for each key, so a key that posts a lot is judged on its recent past only.',
+        'A verdict is where to look first, not a ruling: "suspicious" can be a person who copy-pastes a slogan, and "unknown" means nothing stands out and nothing vouches for the key.',
+        trusted.length ? undefined : 'No trusted keys were given: the closeness-to-your-keys points are unavailable.',
+      ].filter(Boolean),
+      note: UNTRUSTED_NOTE,
     }
   }))
 

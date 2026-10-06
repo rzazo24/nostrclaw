@@ -32,7 +32,7 @@ describe('tool catalogue', () => {
   it('exposes the expected tools, every one marked read-only and none able to write', async () => {
     const { client } = await setup()
     const { tools } = await client.listTools()
-    expect(tools.map((t) => t.name).sort()).toEqual(['account_triage', 'activity_report', 'author_report', 'compare_relays', 'count_events', 'event_engagement', 'event_locations', 'nostrclaw_status', 'recent_events', 'relay_overview', 'trust_score'])
+    expect(tools.map((t) => t.name).sort()).toEqual(['account_triage', 'activity_report', 'author_report', 'compare_relays', 'count_events', 'event_engagement', 'event_locations', 'nostrclaw_status', 'recent_events', 'relay_overview', 'review_interactions', 'trust_score'])
     for (const t of tools) {
       expect(t.annotations?.readOnlyHint, t.name).toBe(true)
       expect(t.annotations?.destructiveHint, t.name).toBe(false)
@@ -499,3 +499,61 @@ describe('trust_score', () => {
     expect((await call(client, 'trust_score', { pubkeys: [t.pk] })).text).not.toMatch(/SECRET-NAME|ignore previous/)
   })
 })
+
+describe('review_interactions', () => {
+  const follows = (k: ReturnType<typeof key>, who: string[], t = NOW - 100) => ev(k, 3, '', t, who.map((p) => ['p', p]))
+  const memory = (events: ReturnType<typeof ev>[]): Partial<NostrApi> => ({
+    async query(_r, f, o) {
+      const got = events.filter((e) => matchFilter(f as Filter, e)).sort((x, y) => y.created_at - x.created_at).slice(0, Math.min(o.max, (f as { limit?: number }).limit ?? o.max))
+      return { events: got, eose: true, notices: [], invalid: 0, ms: 1 }
+    },
+  })
+
+  it('separates the spam bot from the person who likes the note, explains why, and keeps third-party text under "untrusted"', async () => {
+    const me = key(), bot = key(), friend = key(), stranger = key(), botFriends = [key(), key()]
+    const note = ev(me, 1, 'Meet nostrclaw, an MCP server', NOW - 3600)
+    const botNotes = Array.from({ length: 14 }, (_, i) => ev(bot, 1, `Join our free signals group today https://t.example/${i}`, NOW - 7200 - i * 4))
+    const events = [
+      note,
+      ev(bot, 1, 'Join our free signals group today https://t.example/reply', NOW - 600, [['e', note.id], ['p', me.pk]]), ...botNotes,
+      follows(botFriends[0]!, [bot.pk]), follows(botFriends[1]!, [bot.pk]), // the bot is followed by two other keys: "somewhat vouched for"
+      ev(friend, 7, '🤙', NOW - 500, [['e', note.id], ['p', me.pk]]), ev(friend, 0, '{"name":"Fran"}', NOW - 40 * 86400), ev(friend, 1, 'good morning everyone', NOW - 40 * 86400),
+      follows(me, [friend.pk]), // I trust and follow the friend
+      ev(stranger, 1, 'nice work, thanks for sharing', NOW - 400, [['e', note.id], ['p', me.pk]]),
+      ev(key(), 9735, '', NOW - 300, [['e', note.id]]), // a zap receipt
+    ]
+    const { client } = await setup(memory(events))
+    const r = (await call(client, 'review_interactions', { eventId: note.id, trusted: [me.pk] })).json
+    expect(r).toMatchObject({ foundTarget: true, interactions: { replies: 2, reactions: 1, reposts: 0, zaps: 1, distinctPeople: 3 }, examined: 3 })
+    const by = (pk: string) => r.people.find((p: { npub: string }) => p.npub === nip19.npubEncode(pk))
+    expect(by(bot.pk)).toMatchObject({ verdict: 'likely-bot' })
+    expect(by(bot.pk).reasons.join(' ')).toMatch(/same text 15 times.*100% of its 15 notes carry a link/)
+    expect(by(bot.pk).trust.score).toBeGreaterThan(0) // somewhat vouched for, and still a bot
+    expect(by(friend.pk)).toMatchObject({ verdict: 'established', trust: { level: 'established' } })
+    expect(by(stranger.pk)).toMatchObject({ verdict: 'unknown' })
+    expect(r.people.map((p: { verdict: string }) => p.verdict)).toEqual(['likely-bot', 'established', 'unknown'].sort((x, y) => ({ 'likely-bot': 0, suspicious: 1, unknown: 2, established: 3 } as Record<string, number>)[x]! - ({ 'likely-bot': 0, suspicious: 1, unknown: 2, established: 3 } as Record<string, number>)[y]!))
+    expect(r.byVerdict).toMatchObject({ 'likely-bot': 1, established: 1, unknown: 1, suspicious: 0 })
+    expect(by(bot.pk).untrusted.sample[0]).toMatch(/free signals group/)
+    expect(JSON.stringify({ ...r, people: r.people.map((p: object) => ({ ...p, untrusted: undefined })) })).not.toMatch(/free signals|good morning|thanks for sharing/) // third-party text only under untrusted
+  })
+
+  it('works for a note with no interactions, rejects bad ids, and ignores the author\'s own replies', async () => {
+    const me = key(), note = ev(me, 1, 'quiet note', NOW - 100)
+    const { client } = await setup(memory([note, ev(me, 1, 'my own follow-up', NOW - 50, [['e', note.id]])]))
+    const r = (await call(client, 'review_interactions', { eventId: nip19.noteEncode(note.id) })).json
+    expect(r).toMatchObject({ foundTarget: true, examined: 0, interactions: { replies: 0, distinctPeople: 0 }, people: [] })
+    expect((await call(client, 'review_interactions', { eventId: 'nope' })).text).toMatch(/not a valid event id/)
+    expect((await call(client, 'review_interactions', { eventId: 'ab'.repeat(32) })).json.foundTarget).toBe(false)
+  })
+
+  it('examines replies first and says how many people it did not examine', async () => {
+    const me = key(), note = ev(me, 1, 'popular', NOW - 1000)
+    const likers = Array.from({ length: 6 }, () => key()), replier = key()
+    const events = [note, ...likers.map((k, i) => ev(k, 7, '+', NOW - 100 - i, [['e', note.id]])), ev(replier, 1, 'a reply from someone', NOW - 900, [['e', note.id]])]
+    const { client } = await setup(memory(events))
+    const r = (await call(client, 'review_interactions', { eventId: note.id, maxAuthors: 3 })).json
+    expect(r).toMatchObject({ examined: 3, notExamined: 4 })
+    expect(r.people.some((p: { npub: string }) => p.npub === nip19.npubEncode(replier.pk))).toBe(true) // the reply was not the one left out
+  })
+})
+

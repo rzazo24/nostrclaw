@@ -132,6 +132,18 @@ event id, kind, content hash, relays and result. No content, no secrets, no URIs
   not accept it (up to 3 times). It takes just an event id, only knows events nostrclaw itself signed, and still publishes only to the policy's relays, so it is not
   a generic rebroadcast. If every relay refused, the draft is spent (no second signature) and the error says how to retry.
 
+## Added in 0.7.0
+
+- **`draft_reaction` / `draft_reply`** fetch the event being answered (from the configured relays, signature verified) and build its tags: NIP-25 `e`/`p`/`k`
+  (+ `a` for addressable events), and NIP-10 marked threading (`root` when replying to a root, `root` + `reply` deeper in a thread; the parent's author first among
+  the `p` tags, at most 8). Only replies to kind-1 notes are built (other kinds need NIP-22). The draft keeps a short, cleaned excerpt of the original
+  (`context`) that is shown in the confirmation question, so the user sees what is being answered, not only the new text.
+- **Automatic tags in notes**: `#hashtags` (lower-case `t`, max 10) and `nostr:npub…`/`nprofile…` mentions (`p`, max 8) are added to a kind-1 draft; the
+  user sees them in the draft. Other kinds are left exactly as given.
+- **`review_interactions`** (read-only) looks at everyone who replied to, reacted to or reposted a note: web-of-trust score plus behaviour (`src/review.ts`). The
+  order of weight is deliberate: behaviour first. In the real network a spam bot with 100 near-identical promotional notes was followed by 25 keys and scored
+  55/100 in trust; only its behaviour gave it away.
+
 ## Known limitation
 
 The confirmation question (MCP elicitation) controls publishing **through nostrclaw's tools**. It cannot control a model that has a shell and reads the saved app

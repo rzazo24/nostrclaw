@@ -40,6 +40,7 @@ Then ask Claude things like *“Audit my relay”*, *“What is the traffic of t
 | `account_triage` | Lists the authors of a window whose *behaviour* looks like spam (text shared with other keys — near-copies included —, bursts, link-only posting), each point with a stated reason. Short greetings ("Azul", "gm") don't count as copying, and "high" needs two behaviour signals. Missing profile/follows/relay list on this relay adds to the score but never flags a key on its own; keys with no behaviour signal are only counted. A triage aid, not a verdict |
 | `event_engagement` | One event: replies, reactions, reposts and zaps, counted from the events that reference it (up to 500; NIP-45 COUNT with tag filters answers a silent 0 on khatru+sqlite, so it is not used), reaction breakdown and distinct reactors |
 | `compare_relays` | Several configured relays side by side: NIP-11 (software, NIPs, limits), latency, events per hour, kinds held, and **propagation**: the recent events of a reference relay (yours by default) are looked up by id on every other relay, so you see what share reached each one. Busy public relays only return their newest events, so samples are never compared directly. A relay that fails is reported and the rest still compared; an empty answer comes with the reason the relay gave |
+| `review_interactions` | For one note: who replied, reacted or reposted, and a verdict per person (`likely-bot` / `suspicious` / `unknown` / `established`) that weighs what the key *does* (same text again and again, links in most notes, bursts) above its web-of-trust score |
 | `trust_score` | Web-of-trust score for keys from the follow lists the relays hold: followers, followers that are themselves followed, closeness to keys *you* trust (`trusted`), distinct keys that interacted with it, time seen. Give `pubkeys`, or none to examine the *new* keys of a recent window. A follow ring of throw-away keys stays "unknown"; every point has its reason; it is an aid, not an identity check |
 | `event_locations` | For up to 20 event ids, which configured relays hold each (kind and age only, no content) |
 
@@ -57,6 +58,8 @@ Off by default. Enable it with `NOSTRCLAW_ENABLE_SIGNING=1` and five more tools 
 | `signer_status` | Connection state, which npub it signs as, the policy in force, signatures made and requested in the last hour |
 | `signer_disconnect` | Closes the session and deletes the saved app key |
 | `draft_event` | Prepares an **unsigned** event and checks it against your policy. Publishes nothing |
+| `draft_reaction` | Fetches an event and drafts a reaction (NIP-25) with the `e`, `p`, `k` (and `a`) tags built for you; content `+`, `-` or one emoji |
+| `draft_reply` | Fetches a note and drafts a reply with the NIP-10 thread tags (`root` / `reply` markers) and `p` tags built for you; `#hashtags` and `nostr:npub…` become tags. The confirmation question shows what you are answering |
 | `publish_event` | Takes a draft id, first checks the signer is awake (a quick `ping`: if Clave is in the background it says so *before* asking you anything), then **asks you to confirm**, has your signer sign it and sends it to your relays |
 | `retry_publish` | Re-sends an event nostrclaw itself signed (kept 15 minutes) to the relays that did not accept it, **with no new signature**; at most 3 retries; it cannot send anything else |
 
