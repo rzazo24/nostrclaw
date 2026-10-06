@@ -63,7 +63,7 @@ A tool argument like `confirm: true` is worthless: the model fills it in. Confir
    takes. If the signature comes back faster than `minHumanApprovalMs` (default 2 s) the signer is assumed to approve automatically; the signed event
    is **discarded** (never published, and never shown to the model, so it cannot be published by other means), the attempt is audited, and
    `publish_event` refuses further signer-only publications until the user reconnects, telling them how to turn auto-approval off or to use a client with elicitation.
-3. If the signer does not answer in `signTimeoutMs` (default 2 min) or rejects, nothing is published.
+3. If the signer does not answer in `signTimeoutMs` (default 5 min) or rejects, nothing is published. The confirmation question tells the user to open their signer app and keep it on screen: phone signers are suspended in the background and do not announce requests.
 
 The client's own tool-permission prompt (Claude Code asks before running tools that are not read-only) is an additional layer; we do not rely on it.
 After signing, the returned event is re-checked: valid id and signature, signed by the connected key, and kind/content/tags identical to the draft.
@@ -81,7 +81,7 @@ After signing, the returned event is re-checked: valid id and signature, signed 
 | `publishRelays` | the first configured relay | Where events may be sent; each must be on the analysis allowlist |
 | `blockedPatterns` | `nsec1…`, `ncryptsec1…`, `bunker://`, `nostrconnect://`, `secret=` | Regular expressions the content must not match (the user's own are added) |
 | `minHumanApprovalMs` | `2000` | See above |
-| `signTimeoutMs` | `120000` | |
+| `signTimeoutMs` | `300000` | How long to wait for the signer after the user confirmed. A phone signer does not alert the user by itself, so this is generous (5 min) |
 
 ### Audit log
 

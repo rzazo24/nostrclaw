@@ -16,7 +16,7 @@ const schema = z.object({
   publishRelays: z.array(z.string()).max(10).default([]),
   blockedPatterns: z.array(z.string().min(1).max(200)).max(50).default([]),
   minHumanApprovalMs: z.number().int().min(0).max(60000).default(2000),
-  signTimeoutMs: z.number().int().min(1000).max(600000).default(120000),
+  signTimeoutMs: z.number().int().min(1000).max(600000).default(300000),
 }).strict()
 
 export interface Policy {
