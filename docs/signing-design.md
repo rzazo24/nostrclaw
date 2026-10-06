@@ -114,6 +114,13 @@ event id, kind, content hash, relays and result. No content, no secrets, no URIs
   new link) looked like an expired session. Now `signer_connect` keeps asking for about 2.5 minutes (so the user can open the app while it waits), never swaps
   the saved session for a new link on its own, and leaves the file untouched when it fails; `newLink: true` asks for a fresh link on purpose.
 
+- **Background behaviour, measured (Clave with *low trust*, 2026-10-06).** Clave does wake up in the background: a push arrives on the iPhone as a **blank
+  notification**, and with *low trust* that is all it does — it waits for the user. Resuming with Clave in the background got no answer in 150 s; resuming and
+  then **tapping the notification when it arrived** got the answer 21 s after the first request. So the practical flow is "call signer_connect (or publish), tap
+  Clave's blank notification, approve". The notification does not depend on the relay list: requests reach both relays, Clave answers only through
+  `relay.powr.build`, and the second relay in the link does no harm. An earlier theory (that listing the user's relay hurt background signing) was wrong.
+  Not tested: whether a *medium trust* connection would answer `get_public_key` silently; it would also auto-approve kinds 1, 6 and 7, which is the unsafe choice.
+
 ## Known limitation
 
 The confirmation question (MCP elicitation) controls publishing **through nostrclaw's tools**. It cannot control a model that has a shell and reads the saved app

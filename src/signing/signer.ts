@@ -132,7 +132,7 @@ export class SignerManager {
           this.userPubkey = await withTimeout(signer.getPublicKey(), Math.max(1, Math.min(attempt, end - Date.now())), 'the signer (which key it signs as)')
           break
         } catch (e) {
-          if (Date.now() + 500 >= end) throw new Error(`${asError(e).message}. Open the signer app (Clave) on screen and try again; the saved session is intact`)
+          if (Date.now() + 500 >= end) throw new Error(`the signer (which key it signs as) did not answer within ${Math.round(budget / 1000)} s. Open the signer app (Clave) — or tap its notification, which arrives blank — and try again; the saved session is intact`)
         }
       }
       this.state = 'connected'; this.phase = undefined; this.lastError = undefined; this.autoApprovalSuspected = false; this.pending = undefined

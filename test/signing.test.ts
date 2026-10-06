@@ -268,7 +268,7 @@ describe.skipIf(!bin)('signing (real relay + pretend NIP-46 signer)', () => {
     const r = await call(b.client, 'signer_connect')
     expect(r.json).toMatchObject({ state: 'disconnected' })
     expect(r.json.nostrconnectUri).toBeUndefined()
-    expect(r.json.lastError).toMatch(/saved session is intact/)
+    expect(r.json.lastError).toMatch(/did not answer within \d+ s.*tap its notification.*saved session is intact/s)
     expect(r.json.note).toMatch(/open the signer app.*newLink: true/s)
     expect(fs.readFileSync(saved, 'utf8')).toBe(before) // untouched
     const fresh = await call(b.client, 'signer_connect', { newLink: true })
