@@ -146,6 +146,16 @@ event id, kind, content hash, relays and result. No content, no secrets, no URIs
   **automated** (a declared bot that publishes periodic reports in bulk or only reacts): a real assistant bot posted 138 events in a minute and a weekly leaderboard
   four times, and was harmless. What decides is what the key says to *other people*, not how often it posts: the same text sent to five or more answers **to at least three different people**, or links in at least half of its answers (three or more). The same answer given several times to one person is a conversation, and a real assistant bot that answered 371 people, repeating one text four times, must not be called promotional (a first calibration did).
 
+## Added in 0.10.0: deleting your own events (NIP-09)
+
+- **Opt-in in the policy.** A deletion is a kind-5 event, so it needs `5` in `allowedKinds` of `policy.json` (the user's file, off by default). The checks in `checkDraft`: 1 to 5
+  `e` tags (64-hex ids) and optional `k` tags, nothing else, and a reason of at most 200 characters that still goes through the blocked patterns.
+- **Only your own events, checked where the events are fetched.** `draft_deletion` reads each event (signature verified) and refuses any whose author is not the
+  connected key, and any kind-5 event (a deletion request cannot be deleted). One foreign event in the list refuses the whole request. `draft_event` cannot make a
+  kind 5 by hand, so there is a single path to a deletion.
+- **Honest about what it does.** The confirmation says it *asks* the relays to delete, and that relays and people who already copied the events may keep them. The request goes
+  only to the policy's relays; relays that never held the event ignore it, and relays honour it at their discretion. Check afterwards with `event_locations`.
+
 ## Known limitation
 
 The confirmation question (MCP elicitation) controls publishing **through nostrclaw's tools**. It cannot control a model that has a shell and reads the saved app

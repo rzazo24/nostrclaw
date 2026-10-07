@@ -67,5 +67,12 @@ export function checkDraft(policy: Policy, d: DraftInput): string | null {
   const hay = [d.content, ...d.tags.flat()].join('\n')
   for (const re of policy.blockedPatterns) if (re.test(hay)) return 'the content matches a blocked pattern (it looks like it contains a secret or a connection string)'
   if (d.kind === 1 && !d.content.trim()) return 'a note cannot be empty'
+  if (d.kind === 5) { // NIP-09 deletion request: named events only, and a short reason; whether they are the user's own is checked where the events are fetched
+    if (chars > 200) return 'the reason of a deletion is at most 200 characters'
+    const targets = d.tags.filter((t) => t[0] === 'e').length
+    if (targets < 1 || targets > 5) return 'a deletion names between 1 and 5 events (e tags)'
+    const wellFormed = (t: string[]) => t.length === 2 && ((t[0] === 'e' && /^[0-9a-f]{64}$/i.test(t[1] ?? '')) || (t[0] === 'k' && /^\d{1,5}$/.test(t[1] ?? '')))
+    if (!d.tags.every(wellFormed)) return 'a deletion carries only e tags (64-character event ids) and k tags (kinds)'
+  }
   return null
 }

@@ -440,6 +440,69 @@ describe.skipIf(!bin)('signing (real relay + pretend NIP-46 signer)', () => {
     expect(fs.existsSync(path.join(s.config, 'signer.json'))).toBe(true)
   })
 
+  describe('deleting your own events (NIP-09)', () => {
+    const del = { allowedKinds: [1, 7, 5] }
+    const NOW = () => Math.floor(Date.now() / 1000)
+    const mine = async (s: Awaited<ReturnType<typeof setup>>, kind: number) =>
+      (await call(s.client, 'recent_events', { kinds: [kind], authors: [s.fake.userPk], limit: 20 })).json.untrusted.events as { id: string; content: string }[]
+
+    it('is off by default and says how to turn it on', async () => {
+      const s = await setup({ elicit: yes })
+      const note = (await s.publishNote('a note I will not delete')).published!.json
+      expect((await call(s.client, 'draft_deletion', { eventIds: [note.eventId] })).text).toMatch(/deleting is off.*add 5 to "allowedKinds"/)
+    })
+
+    it('drafts the deletion of your own note, the question says what is deleted and that it is only a request, and the note disappears from the relay', async () => {
+      const questions: string[] = []
+      const s = await setup({ policy: del, elicit: (m) => { questions.push(m); return { action: 'accept', content: { publish: true } } } })
+      const note = (await s.publishNote('delete me please')).published!.json
+      expect((await mine(s, 1)).map((e) => e.id)).toContain(note.eventId)
+
+      const d = await call(s.client, 'draft_deletion', { eventIds: [note.eventId], reason: 'test note' })
+      expect(d.json.preview).toMatchObject({ kind: 5, content: 'test note', tags: [['e', note.eventId], ['k', '1']] })
+      expect(d.json.targets[0]).toMatchObject({ id: note.eventId, kind: 1 })
+      expect(d.json.warning).toMatch(/at their discretion.*copies/)
+      const r = await call(s.client, 'publish_event', { draftId: d.json.draftId })
+      expect(r.json.published).toBe(true)
+      expect(questions[1]).toMatch(/Deleting your note from .*UTC: "delete me please"/)
+      expect(questions[1]).toMatch(/ASKS the relays to delete the events above/)
+      expect(questions[1]).not.toMatch(/cannot really be undone/)
+      expect((await mine(s, 1)).map((e) => e.id)).not.toContain(note.eventId) // the relay honoured it
+    })
+
+    it('deletes a reaction and several events at once', async () => {
+      const target = ev(key(), 1, 'somebody else\'s note', NOW() - 30); await relay.publish([target])
+      const s = await setup({ policy: del, elicit: yes })
+      const a = (await s.publishNote('first of two')).published!.json, b = (await s.publishNote('second of two')).published!.json
+      const react = (await s.publishNote('+', 7, [['e', target.id], ['p', target.pubkey]])).published!.json
+      const d = await call(s.client, 'draft_deletion', { eventIds: [a.eventId, b.eventId, react.eventId] })
+      expect(d.json.preview.tags).toEqual([['e', a.eventId], ['e', b.eventId], ['e', react.eventId], ['k', '1'], ['k', '7']])
+      expect((await call(s.client, 'publish_event', { draftId: d.json.draftId })).json.published).toBe(true)
+      expect((await mine(s, 1)).map((e) => e.id)).not.toEqual(expect.arrayContaining([a.eventId]))
+      expect((await mine(s, 7)).map((e) => e.id)).not.toContain(react.eventId)
+    })
+
+    it('refuses other people\'s events, events that do not exist, more than five, and needs a connected signer', async () => {
+      const others = ev(key(), 1, 'not mine', NOW() - 10); await relay.publish([others])
+      const s = await setup({ policy: del, elicit: yes })
+      expect((await call(s.client, 'draft_deletion', { eventIds: [others.id] })).text).toMatch(/was not signed by your key.*only delete your own/)
+      expect((await call(s.client, 'draft_deletion', { eventIds: ['ab'.repeat(32)] })).text).toMatch(/not found on the configured relays/)
+      expect((await call(s.client, 'draft_deletion', { eventIds: Array.from({ length: 6 }, (_, i) => String(i).repeat(64)) })).isError).toBe(true)
+      const mixed = (await s.publishNote('mine, but mixed with a stranger\'s')).published!.json
+      expect((await call(s.client, 'draft_deletion', { eventIds: [mixed.eventId, others.id] })).text).toMatch(/not signed by your key/) // one stranger's event spoils the whole request
+      const idle = await setup({ policy: del, connected: false, elicit: yes })
+      expect((await call(idle.client, 'draft_deletion', { eventIds: [others.id] })).text).toMatch(/connect the signer first/)
+    })
+
+    it('a deletion cannot be drafted by hand, nor can a deletion request be deleted', async () => {
+      const s = await setup({ policy: del, elicit: yes })
+      expect((await call(s.client, 'draft_event', { kind: 5, content: '', tags: [['e', 'ab'.repeat(32)]] })).text).toMatch(/use draft_deletion/)
+      const note = (await s.publishNote('to be deleted once')).published!.json
+      const deletion = (await call(s.client, 'publish_event', { draftId: (await call(s.client, 'draft_deletion', { eventIds: [note.eventId] })).json.draftId })).json
+      expect((await call(s.client, 'draft_deletion', { eventIds: [deletion.eventId] })).text).toMatch(/itself a deletion request|not found on the configured relays/)
+    })
+  })
+
   it('a note from the network that tells the assistant to publish cannot make it publish: only the user\'s answer counts', async () => {
     // someone posts an injection; the assistant (the test) reads it and, "obeying", drafts and publishes — the user says no
     const s = await setup({ elicit: no })

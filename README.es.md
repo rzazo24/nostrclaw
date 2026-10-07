@@ -52,7 +52,7 @@ Las dos herramientas de comparación necesitan al menos dos relés en `NOSTRCLAW
 
 ## Publicar (opcional, NIP-46)
 
-Desactivado por defecto. Se activa con `NOSTRCLAW_ENABLE_SIGNING=1` y aparecen ocho herramientas más:
+Desactivado por defecto. Se activa con `NOSTRCLAW_ENABLE_SIGNING=1` y aparecen nueve herramientas más:
 
 | Herramienta | Qué hace |
 |---|---|
@@ -62,6 +62,7 @@ Desactivado por defecto. Se activa con `NOSTRCLAW_ENABLE_SIGNING=1` y aparecen o
 | `draft_event` | Prepara un evento **sin firmar** y lo comprueba contra tu política. No publica nada |
 | `draft_reaction` | Busca un evento y prepara una reacción (NIP-25) con las etiquetas `e`, `p`, `k` (y `a`) ya construidas; contenido `+`, `-` o un emoji |
 | `draft_reply` | Busca una nota y prepara una respuesta con las etiquetas de hilo de NIP-10 (marcas `root` / `reply`) y las `p` ya construidas; los `#hashtags` y `nostr:npub…` se convierten en etiquetas. La pregunta de confirmación enseña a qué respondes |
+| `draft_deletion` | Prepara una **petición de borrado** NIP-09 de hasta 5 eventos *tuyos*. Busca cada uno y rechaza los que no firmó tu clave (no puede tocar eventos ajenos). **Desactivado por defecto**: añade `5` a `allowedKinds` en `policy.json`. Los relés la atienden a su criterio y pueden quedar copias hechas en otros sitios |
 | `publish_event` | Recibe el id de un borrador, primero comprueba que el firmador está despierto (un `ping` rápido: si Clave está en segundo plano lo dice *antes* de preguntarte nada), luego **te pide confirmación**, hace que tu firmador lo firme y lo envía a tus relés |
 | `retry_publish` | Reenvía un evento que nostrclaw firmó él mismo (se guarda 15 minutos) a los relés que no lo aceptaron, **sin nueva firma**; máximo 3 reintentos; no puede enviar nada más |
 
@@ -72,7 +73,7 @@ Cómo queda todo bajo tu control:
 - **Clave en segundo plano:** con aprobación manual (*low trust*) Clave muestra una **notificación en blanco** y espera; púlsala y aprueba. nostrclaw sigue preguntando unos dos minutos y medio mientras lo haces.
 - **Usa la aprobación manual del firmador** (Clave: *low trust*). Si el firmador aprueba solo, cualquier cosa que pueda leer la clave de aplicación guardada en tu máquina —incluido un asistente con terminal— podría pedirle firmas sin ninguna pregunta; nostrclaw avisa cuando lo detecta.
 - **Se detecta el «aprobar siempre».** Sin elicitación, la aprobación del firmador es la cerradura, así que se verifica: una firma que vuelve más rápido de lo que podría decidir una persona (por defecto 2 s) se **descarta y nunca se publica**, y se rechazan más publicaciones hasta que arregles el firmador y vuelvas a conectar.
-- **Una política tuya** (`~/.config/nostrclaw/policy.json`, ninguna herramienta puede escribirla): tipos permitidos (por defecto solo notas `1` y reacciones `7`), firmas por hora (por defecto 5; cuenta las firmas realmente hechas), longitud máxima, relés y patrones bloqueados (todo lo que parezca un `nsec1…`, `bunker://`, `secret=`…). Un archivo inválido detiene el servidor.
+- **Una política tuya** (`~/.config/nostrclaw/policy.json`, ninguna herramienta puede escribirla): tipos permitidos (por defecto solo notas `1` y reacciones `7`; añade `5` para poder borrar tus propios eventos), firmas por hora (por defecto 5; cuenta las firmas realmente hechas), longitud máxima, relés y patrones bloqueados (todo lo que parezca un `nsec1…`, `bunker://`, `secret=`…). Un archivo inválido detiene el servidor.
 - **El modelo no puede alterar ni reenviar nada:** `publish_event` solo recibe un id de borrador; el evento firmado se compara con el borrador y va únicamente a los relés, nunca de vuelta a la conversación.
 - **Registro de auditoría** (`~/.local/state/nostrclaw/audit.jsonl`): cada paso con ids y hashes, nunca contenido ni secretos.
 
@@ -144,7 +145,7 @@ Las pruebas de firma usan un firmador NIP-46 de mentira (`test/fake-signer.ts`) 
 | `src/doctor.ts` | `nostrclaw doctor`: revisión de solo lectura de la configuración |
 | `src/safety.ts` | Lista de relés, protección de direcciones privadas, limpieza del texto ajeno |
 | `src/nostr/client.ts` | Cliente de Nostr mínimo y de solo lectura (REQ, COUNT, NIP-11, `/stats.json`) |
-| `src/signing/` | Publicar: `policy.ts` (tu archivo de política), `signer.ts` (sesión NIP-46), `tools.ts` (las ocho herramientas), `audit.ts` |
+| `src/signing/` | Publicar: `policy.ts` (tu archivo de política), `signer.ts` (sesión NIP-46), `tools.ts` (las nueve herramientas), `audit.ts` |
 | `src/config.ts`, `src/index.ts` | Configuración y punto de entrada por stdio |
 
 ## Hoja de ruta
@@ -152,7 +153,8 @@ Las pruebas de firma usan un firmador NIP-46 de mentira (`test/fake-signer.ts`) 
 1. **0.1**: análisis de solo lectura.
 2. **0.2**: firma con NIP-46, opcional — conectar con un firmador remoto, preparar borradores y publicar solo tras confirmación humana explícita. Diseño y modelo de amenazas en [docs/signing-design.md](docs/signing-design.md).
 3. **0.3 – 0.9 (ahora)**: `account_triage`, `event_engagement`, `trust_score` (red de confianza), `compare_relays` y `event_locations` (propagación entre relés), `review_interactions` (bots), `draft_reaction` / `draft_reply`, una comprobación rápida del firmador antes de preguntarte, `retry_publish`, `nostrclaw doctor` y análisis en varios relés a la vez.
-4. Ideas, sin empezar: borrar tus propias notas (NIP-09), publicar el paquete en npm.
+4. **0.10**: borrar tus propios eventos (NIP-09), opcional.
+5. Ideas, sin empezar: publicar el paquete en npm.
 
 ## Licencia
 

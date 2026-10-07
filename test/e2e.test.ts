@@ -145,6 +145,6 @@ describe.skipIf(!bin)('against the real relay', () => {
     expect(r.isError).toBeFalsy()
     expect(JSON.parse((r.content as { text: string }[])[0]!.text).returned).toBe(1)
     await client.close()
-    expect(stderr).toMatch(/nostrclaw 0\.9\.0 ready \(read-only\)/)
+    expect(stderr).toMatch(/nostrclaw 0\.10\.0 ready \(read-only\)/)
   })
 })

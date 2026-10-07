@@ -49,6 +49,28 @@ describe('policy file', () => {
   })
 })
 
+describe('checkDraft: deletions (kind 5)', () => {
+  const p = () => loadPolicy(cfg({ signing: { enabled: true, signerRelays: [], configDir: '/nonexistent/c', stateDir: '/nonexistent/s' } }))
+  const allowing = () => ({ ...p(), allowedKinds: [1, 7, 5] })
+  const id = (n: string) => n.repeat(64)
+  it('is refused unless the policy lists kind 5', () => {
+    expect(checkDraft(p(), { kind: 5, content: '', tags: [['e', id('a')]] })).toMatch(/kind 5 is not allowed/)
+    expect(checkDraft(allowing(), { kind: 5, content: 'test note', tags: [['e', id('a')], ['k', '1']] })).toBeNull()
+  })
+  it('names between 1 and 5 events, with only e and k tags', () => {
+    expect(checkDraft(allowing(), { kind: 5, content: '', tags: [] })).toMatch(/between 1 and 5 events/)
+    expect(checkDraft(allowing(), { kind: 5, content: '', tags: ['a', 'b', 'c', 'd', 'e', 'f'].map((n) => ['e', id(n)]) })).toMatch(/between 1 and 5/)
+    expect(checkDraft(allowing(), { kind: 5, content: '', tags: [['e', id('a')], ['p', id('b')]] })).toMatch(/only e tags/)
+    expect(checkDraft(allowing(), { kind: 5, content: '', tags: [['e', 'not-hex']] })).toMatch(/only e tags/)
+    expect(checkDraft(allowing(), { kind: 5, content: '', tags: [['e', id('a'), 'wss://relay.example', 'root']] })).toMatch(/only e tags/)
+    expect(checkDraft(allowing(), { kind: 5, content: '', tags: [['e', id('a')], ['k', 'text']] })).toMatch(/only e tags/)
+  })
+  it('keeps the reason short and subject to the blocked patterns', () => {
+    expect(checkDraft(allowing(), { kind: 5, content: 'x'.repeat(201), tags: [['e', id('a')]] })).toMatch(/at most 200/)
+    expect(checkDraft(allowing(), { kind: 5, content: 'oops nsec1' + 'q'.repeat(30), tags: [['e', id('a')]] })).toMatch(/blocked pattern/)
+  })
+})
+
 describe('checkDraft', () => {
   const p = () => loadPolicy(withDir(tmp()))
   it('allows an ordinary note and a reaction', () => {
