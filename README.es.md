@@ -2,7 +2,7 @@
 
 *Read in English: [README.md](README.md)*
 
-Un servidor [MCP](https://modelcontextprotocol.io) que permite a Claude **analizar un relé de Nostr**: si está sano, qué anuncia, qué pasa por él y qué claves parecen sospechosas o automatizadas, quién las avala y quién interactúa con una nota. Por defecto es de **solo lectura**. Opcionalmente (apagado hasta que lo actives) Claude también puede **preparar y publicar notas y reacciones** mediante un firmador remoto ([NIP-46](https://github.com/nostr-protocol/nips/blob/master/46.md): Clave, nsec.app, un bunker): tu clave privada nunca llega a este programa y cada publicación necesita tu confirmación explícita. Mira [Publicar](#publicar-opcional-nip-46) y [docs/signing-design.md](docs/signing-design.md) (en inglés).
+Un servidor [MCP](https://modelcontextprotocol.io) que permite a Claude **analizar un relé de Nostr**: si está sano, qué anuncia, qué pasa por él y qué claves parecen sospechosas o automatizadas, quién las avala y quién interactúa con una nota. Por defecto es de **solo lectura**. Opcionalmente (apagado hasta que lo actives) Claude también puede **preparar y publicar notas, respuestas y reacciones, y borrar tus propios eventos** mediante un firmador remoto ([NIP-46](https://github.com/nostr-protocol/nips/blob/master/46.md): Clave, nsec.app, un bunker): tu clave privada nunca llega a este programa y cada publicación necesita tu confirmación explícita. Mira [Publicar](#publicar-opcional-nip-46) y [docs/signing-design.md](docs/signing-design.md) (en inglés).
 
 Escrito en TypeScript sobre el SDK oficial de MCP y `nostr-tools`. Funciona en local por stdio (Claude Code, Claude Desktop) y solo habla con los relés que permitas.
 

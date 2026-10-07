@@ -2,7 +2,7 @@
 
 *Leer en español: [README.es.md](README.es.md)*
 
-An [MCP](https://modelcontextprotocol.io) server that lets Claude **analyse a Nostr relay**: is it healthy, what does it advertise, what is going through it, and which keys look suspicious or automated, who vouches for them, and who is interacting with a note. By default it is **read-only**. Optionally (off until you enable it) Claude can also **draft and publish notes and reactions** through a remote signer ([NIP-46](https://github.com/nostr-protocol/nips/blob/master/46.md): Clave, nsec.app, a bunker) — your private key never reaches this program and every publication needs your explicit confirmation. See [Publishing](#publishing-optional-nip-46) and [docs/signing-design.md](docs/signing-design.md).
+An [MCP](https://modelcontextprotocol.io) server that lets Claude **analyse a Nostr relay**: is it healthy, what does it advertise, what is going through it, and which keys look suspicious or automated, who vouches for them, and who is interacting with a note. By default it is **read-only**. Optionally (off until you enable it) Claude can also **draft and publish notes, replies and reactions, and delete your own events** through a remote signer ([NIP-46](https://github.com/nostr-protocol/nips/blob/master/46.md): Clave, nsec.app, a bunker) — your private key never reaches this program and every publication needs your explicit confirmation. See [Publishing](#publishing-optional-nip-46) and [docs/signing-design.md](docs/signing-design.md).
 
 Written in TypeScript on the official MCP SDK and `nostr-tools`. It runs locally over stdio (Claude Code, Claude Desktop) and talks to the relays you allow, nothing else.
 
