@@ -3,7 +3,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-export type AuditStep = 'draft' | 'declined' | 'sign-requested' | 'signed' | 'discarded-auto-approval' | 'rejected' | 'published' | 'refused' | 'preflight-failed' | 'retried'
+export type AuditStep = 'draft' | 'declined' | 'sign-requested' | 'signed' | 'discarded-auto-approval' | 'rejected' | 'published' | 'refused' | 'preflight-failed' | 'reconnected' | 'retried'
 
 export interface AuditEntry {
   step: AuditStep

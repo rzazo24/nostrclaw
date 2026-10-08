@@ -156,6 +156,16 @@ event id, kind, content hash, relays and result. No content, no secrets, no URIs
 - **Honest about what it does.** The confirmation says it *asks* the relays to delete, and that relays and people who already copied the events may keep them. The request goes
   only to the policy's relays; relays that never held the event ignore it, and relays honour it at their discretion. Check afterwards with `event_locations`.
 
+## Added in 0.10.1: a stale connection is not "the app is asleep"
+
+- **What happened (2026-10-08):** after hours of use the connection nostrclaw held to the signer went quietly dead. Every quick check failed and said "Clave is in the
+  background", while a brand-new connection (the doctor) got an answer from Clave at once. The only cure was restarting Claude Code.
+- **Now:** when the `ping` through the held connection gets no `pong`, nostrclaw builds a second connection from the saved session on a **fresh relay pool**, pings
+  through it, and only if that also fails tells the user to open the signer. If the fresh one answers, it **replaces** the old one (recorded as `reconnected` in the
+  audit log). If it does not, the held connection and the saved session are left exactly as they were, and the draft survives.
+- **A silence and an error both count as "no" on the held connection:** a dead connection can fail at once with a local error, which says nothing about the signer. An
+  error *reply* is recognised only on the fresh connection, where it can only come from the signer (some signers do not know `ping`).
+
 ## Known limitation
 
 The confirmation question (MCP elicitation) controls publishing **through nostrclaw's tools**. It cannot control a model that has a shell and reads the saved app

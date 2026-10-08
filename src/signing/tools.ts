@@ -232,8 +232,12 @@ export function registerSigningTools(server: McpServer, cfg: Config, api: NostrA
     // a phone signer in the background does not answer: find out BEFORE asking the user to confirm, so they are not left waiting minutes for nothing
     const pingMs = cfg.signing.pingWaitMs ?? 10_000
     if (!(await signer.ping(pingMs))) {
-      audit.log({ step: 'preflight-failed', draftId, kind: draft.template.kind, detail: `no answer to a quick check within ${Math.round(pingMs / 1000)} s` })
-      throw new Error(`the signer did not answer a quick check within ${Math.round(pingMs / 1000)} s, so it is probably in the background. Open the signer app (Clave) on screen, or tap its notification, and call publish_event again with the same draft. Nothing was asked, signed or published`)
+      // before blaming the app: the connection nostrclaw has been holding may have died quietly, so try a fresh one built from the saved session
+      if (await signer.reconnect(pingMs)) audit.log({ step: 'reconnected', draftId, kind: draft.template.kind, detail: 'the held connection did not answer; a fresh one did' })
+      else {
+        audit.log({ step: 'preflight-failed', draftId, kind: draft.template.kind, detail: `no answer to a quick check within ${Math.round(pingMs / 1000)} s, nor to a fresh connection` })
+        throw new Error(`the signer did not answer a quick check within ${Math.round(pingMs / 1000)} s (nor through a fresh connection), so it is probably in the background. Open the signer app (Clave) on screen, or tap its notification, and call publish_event again with the same draft. Nothing was asked, signed or published`)
+      }
     }
 
     // 1) the human decision, through a channel the model cannot write to

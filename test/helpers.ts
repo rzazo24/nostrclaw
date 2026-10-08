@@ -4,6 +4,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { finalizeEvent, generateSecretKey, getPublicKey, type Event } from 'nostr-tools'
 import type { Config } from '../src/config.js'
 import { createServer } from '../src/server.js'
+import type { SigningContext } from '../src/signing/tools.js'
 import type { NostrApi } from '../src/nostr/client.js'
 
 export const cfg = (over: Partial<Config> = {}): Config => ({
@@ -25,8 +26,8 @@ export function ev(k: { sk: Uint8Array }, kind: number, content: string, created
 export type Elicit = (message: string) => { action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> }
 
 /** `elicit` makes the client support (and answer) the server's questions to the user, as Claude Code's UI would. */
-export async function connect(c: Config, api?: NostrApi, clock?: () => number, elicit?: Elicit) {
-  const server = createServer(c, api, clock)
+export async function connect(c: Config, api?: NostrApi, clock?: () => number, elicit?: Elicit, signing?: SigningContext) {
+  const server = createServer(c, api, clock, signing)
   const [a, b] = InMemoryTransport.createLinkedPair()
   const client = new Client({ name: 'test', version: '0' }, elicit ? { capabilities: { elicitation: {} } } : undefined)
   if (elicit) client.setRequestHandler(ElicitRequestSchema, async (req) => elicit((req.params as { message: string }).message))

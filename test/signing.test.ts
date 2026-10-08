@@ -5,6 +5,7 @@ import path from 'node:path'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { nip19 } from 'nostr-tools'
 import { runDoctor, type Check } from '../src/doctor.js'
+import { createSigningContext } from '../src/signing/tools.js'
 import { realApi } from '../src/nostr/client.js'
 import type { NostrApi } from '../src/nostr/client.js'
 import type { Config } from '../src/config.js'
@@ -30,7 +31,8 @@ async function setup(o: Opts = {}) {
   fs.writeFileSync(path.join(config, 'policy.json'), JSON.stringify({ minHumanApprovalMs: 500, signTimeoutMs: 2500, ...o.policy }))
   const c: Config = cfg({ relays: [relay.url, ...(o.extraRelays ?? [])], allowPrivate: true, timeoutMs: 5000, signing: { enabled: true, signerRelays: [relay.url], configDir: config, stateDir: state, identityWaitMs: o.identityWaitMs, resumeWaitMs: o.resumeWaitMs, pingWaitMs: o.pingWaitMs } })
   const fake = new FakeSigner(o.signer)
-  const conn = await connect(c, o.api, undefined, o.elicit)
+  const ctx = createSigningContext(c) // kept so a test can reach the signer session (for instance to kill its connection)
+  const conn = await connect(c, o.api, undefined, o.elicit, ctx)
   closers.push(async () => { await fake.stop(); await conn.close() })
   const connectSigner = async () => {
     const r = await call(conn.client, 'signer_connect')
@@ -50,7 +52,7 @@ async function setup(o: Opts = {}) {
     return { draft: d, published: await call(conn.client, 'publish_event', { draftId: d.json.draftId }) }
   }
   const onRelay = async (kinds: number[]) => (await call(conn.client, 'recent_events', { kinds, authors: [fake.userPk] })).json.untrusted.events as { content: string }[]
-  return { ...conn, fake, config, state, audit, publishNote, onRelay, connectSigner, cfg: c }
+  return { ...conn, fake, config, state, audit, publishNote, onRelay, connectSigner, cfg: c, signer: ctx.signer }
 }
 
 describe.skipIf(!bin)('signing (real relay + pretend NIP-46 signer)', () => {
@@ -285,7 +287,7 @@ describe.skipIf(!bin)('signing (real relay + pretend NIP-46 signer)', () => {
     const d = await call(s.client, 'draft_event', { kind: 1, content: 'is anybody awake?' })
     const first = await call(s.client, 'publish_event', { draftId: d.json.draftId })
     expect(first.isError).toBe(true)
-    expect(first.text).toMatch(/quick check.*background.*Open the signer app.*same draft.*Nothing was asked, signed or published/s)
+    expect(first.text).toMatch(/quick check.*fresh connection.*background.*Open the signer app.*same draft.*Nothing was asked, signed or published/s)
     expect(asked).toBe(0) // the user was never bothered
     expect(s.fake.signRequests).toBe(0)
     expect(s.audit().some((e) => e.step === 'preflight-failed')).toBe(true)
@@ -293,6 +295,37 @@ describe.skipIf(!bin)('signing (real relay + pretend NIP-46 signer)', () => {
     const second = await call(s.client, 'publish_event', { draftId: d.json.draftId })
     expect(second.json.published).toBe(true)
     expect(asked).toBe(1)
+  })
+
+  it('a connection that went quietly dead is rebuilt from the saved session, and publishing goes ahead without bothering the user', async () => {
+    let asked = 0
+    const s = await setup({ elicit: () => { asked++; return { action: 'accept', content: { publish: true } } }, pingWaitMs: 1500 })
+    // the held connection dies without a word (the app on the phone is perfectly awake)
+    await (s.signer as unknown as { signer: { close(): Promise<void> } }).signer.close()
+    const first = (await s.publishNote('published through a rebuilt connection')).published!
+    expect(first.json.published).toBe(true)
+    expect(asked).toBe(1) // one question to the user: the normal confirmation, not "open your signer"
+    expect(s.audit().filter((e) => e.step === 'reconnected')).toHaveLength(1)
+    expect(s.fake.seen.filter((x) => x.method === 'ping')).toHaveLength(1) // the dead connection never reached the signer; the fresh one did
+    // and the new connection keeps working: no second rebuild is needed
+    expect((await s.publishNote('and a second one')).published!.json.published).toBe(true)
+    expect(s.audit().filter((e) => e.step === 'reconnected')).toHaveLength(1)
+    expect(s.signer.state).toBe('connected')
+  })
+
+  it('when the signer really is asleep, the fresh attempt fails too: the user is told, nothing is lost, and the saved session and the draft survive', async () => {
+    const s = await setup({ elicit: yes, pingWaitMs: 500 })
+    const saved = path.join(s.config, 'signer.json')
+    const before = fs.readFileSync(saved, 'utf8')
+    s.fake.behaviour.silentToPing = true
+    const d = await call(s.client, 'draft_event', { kind: 1, content: 'the app sleeps' })
+    const failed = await call(s.client, 'publish_event', { draftId: d.json.draftId })
+    expect(failed.isError).toBe(true); expect(failed.text).toMatch(/nor through a fresh connection/)
+    expect(s.audit().some((e) => e.step === 'reconnected')).toBe(false)
+    expect(fs.readFileSync(saved, 'utf8')).toBe(before) // the saved session was not touched
+    expect(s.signer.state).toBe('connected') // the held connection was kept
+    s.fake.behaviour.silentToPing = false // the user opens the app
+    expect((await call(s.client, 'publish_event', { draftId: d.json.draftId })).json.published).toBe(true)
   })
 
   it('a signer that answers ping with an error is awake: it does not block publishing', async () => {

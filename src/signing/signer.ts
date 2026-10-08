@@ -76,9 +76,9 @@ export class SignerManager {
     return sk
   }
 
-  private params() {
+  private params(pool?: SimplePool) {
     this.pool ??= new SimplePool()
-    return { pool: this.pool, skipSwitchRelays: true, onauth: (url: string) => { this.authUrl = cleanText(url, 300) } }
+    return { pool: pool ?? this.pool, skipSwitchRelays: true, onauth: (url: string) => { this.authUrl = cleanText(url, 300) } }
   }
 
   private async established(signer: BunkerSigner, clientSecretHex: string): Promise<void> {
@@ -194,10 +194,40 @@ export class SignerManager {
     return { event, ms: Date.now() - t0 }
   }
 
-  /** Is the signer awake? True when it answers a `ping` (even with an error: it is there), false when nothing comes back within `ms`. */
+  /**
+   * The long-lived connection can go quietly dead (a relay dropped it) while the signer app is perfectly awake, and then every ping looks like "the app is asleep".
+   * This builds a SECOND connection from the saved session, on a fresh pool, and pings through it. If the signer answers, the old connection is replaced by the new
+   * one (true). If not, the old one is kept untouched and the saved session is never touched (false), so trying again later is still possible.
+   */
+  async reconnect(ms: number): Promise<boolean> {
+    const saved = this.load()
+    if (this.state !== 'connected' || !saved?.signerPubkey || !saved.relays?.length) return false
+    const pool = new SimplePool()
+    let fresh: BunkerSigner | undefined
+    try {
+      fresh = BunkerSigner.fromBunker(hexToBytes(saved.clientSecret), { pubkey: saved.signerPubkey, relays: saved.relays, secret: null }, this.params(pool))
+      try { await withTimeout(fresh.ping(), ms, 'the signer') } catch (e) { if (/did not answer within/.test(asError(e).message)) throw e } // an error reply still means it is awake
+    } catch {
+      try { await fresh?.close() } catch { /* already closed */ }
+      try { pool.close(saved.relays) } catch { /* already closed */ }
+      return false
+    }
+    const oldSigner = this.signer, oldPool = this.pool
+    this.signer = fresh
+    this.pool = pool
+    try { await oldSigner?.close() } catch { /* the old connection was dead anyway */ }
+    try { oldPool?.close(saved.relays) } catch { /* ditto */ }
+    return true
+  }
+
+  /**
+   * Is the signer awake through the connection we hold? True only on a real `pong`. A silence AND an error both count as "no": on a connection that died, the
+   * library may fail at once with a local error, which says nothing about the signer. (A signer that does not know `ping` and answers with an error is still
+   * recognised, by `reconnect`, on a fresh connection, where an error can only be the signer's own reply.)
+   */
   async ping(ms: number): Promise<boolean> {
     if (this.state !== 'connected' || !this.signer) return false
-    try { await withTimeout(this.signer.ping(), ms, 'the signer'); return true } catch (e) { return !/did not answer within/.test(asError(e).message) }
+    try { await withTimeout(this.signer.ping(), ms, 'the signer'); return true } catch { return false }
   }
 
   private async dropSigner(): Promise<void> {

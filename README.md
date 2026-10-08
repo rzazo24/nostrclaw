@@ -63,7 +63,7 @@ Off by default. Enable it with `NOSTRCLAW_ENABLE_SIGNING=1` and nine more tools 
 | `draft_reaction` | Fetches an event and drafts a reaction (NIP-25) with the `e`, `p`, `k` (and `a`) tags built for you; content `+`, `-` or one emoji |
 | `draft_reply` | Fetches a note and drafts a reply with the NIP-10 thread tags (`root` / `reply` markers) and `p` tags built for you; `#hashtags` and `nostr:npub…` become tags. The confirmation question shows what you are answering |
 | `draft_deletion` | Drafts a NIP-09 **deletion request** for up to 5 of *your own* events. It fetches each one and refuses any that your key did not sign (so it cannot touch other people's events). **Off by default**: add `5` to `allowedKinds` in `policy.json`. Relays honour it at their discretion and copies already made elsewhere may remain |
-| `publish_event` | Takes a draft id, first checks the signer is awake (a quick `ping`: if Clave is in the background it says so *before* asking you anything), then **asks you to confirm**, has your signer sign it and sends it to your relays |
+| `publish_event` | Takes a draft id, first checks the signer is awake (a quick `ping`; if it gets no answer it rebuilds the connection once from the saved session and tries again, and only then says Clave is in the background — *before* asking you anything), then **asks you to confirm**, has your signer sign it and sends it to your relays |
 | `retry_publish` | Re-sends an event nostrclaw itself signed (kept 15 minutes) to the relays that did not accept it, **with no new signature**; at most 3 retries; it cannot send anything else |
 
 How it stays under your control:

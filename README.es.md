@@ -63,7 +63,7 @@ Desactivado por defecto. Se activa con `NOSTRCLAW_ENABLE_SIGNING=1` y aparecen n
 | `draft_reaction` | Busca un evento y prepara una reacción (NIP-25) con las etiquetas `e`, `p`, `k` (y `a`) ya construidas; contenido `+`, `-` o un emoji |
 | `draft_reply` | Busca una nota y prepara una respuesta con las etiquetas de hilo de NIP-10 (marcas `root` / `reply`) y las `p` ya construidas; los `#hashtags` y `nostr:npub…` se convierten en etiquetas. La pregunta de confirmación enseña a qué respondes |
 | `draft_deletion` | Prepara una **petición de borrado** NIP-09 de hasta 5 eventos *tuyos*. Busca cada uno y rechaza los que no firmó tu clave (no puede tocar eventos ajenos). **Desactivado por defecto**: añade `5` a `allowedKinds` en `policy.json`. Los relés la atienden a su criterio y pueden quedar copias hechas en otros sitios |
-| `publish_event` | Recibe el id de un borrador, primero comprueba que el firmador está despierto (un `ping` rápido: si Clave está en segundo plano lo dice *antes* de preguntarte nada), luego **te pide confirmación**, hace que tu firmador lo firme y lo envía a tus relés |
+| `publish_event` | Recibe el id de un borrador, primero comprueba que el firmador está despierto (un `ping` rápido; si no hay respuesta reconstruye la conexión una vez desde la sesión guardada y repite, y solo entonces dice que Clave está en segundo plano, *antes* de preguntarte nada), luego **te pide confirmación**, hace que tu firmador lo firme y lo envía a tus relés |
 | `retry_publish` | Reenvía un evento que nostrclaw firmó él mismo (se guarda 15 minutos) a los relés que no lo aceptaron, **sin nueva firma**; máximo 3 reintentos; no puede enviar nada más |
 
 Cómo queda todo bajo tu control:
