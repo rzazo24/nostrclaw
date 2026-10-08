@@ -156,6 +156,10 @@ event id, kind, content hash, relays and result. No content, no secrets, no URIs
 - **Honest about what it does.** The confirmation says it *asks* the relays to delete, and that relays and people who already copied the events may keep them. The request goes
   only to the policy's relays; relays that never held the event ignore it, and relays honour it at their discretion. Check afterwards with `event_locations`.
 
+## Added in 0.11.0: replacing your relay lists
+
+`draft_relay_list` replaces kind 10002 (NIP-65) or 10050 (NIP-17). The list decides where people find you or write to you, so: opt-in per kind in `allowedKinds`; it fetches the newest current copy and the confirmation question states what is removed, added and kept; it may only name relays that are in `NOSTRCLAW_RELAYS` or already listed (a hijacked assistant cannot point your messages at a relay it controls); `wss://` only, public hosts, 1 to 10, once each; NIP-65 read/write markers of kept relays survive; `draft_event` refuses these kinds. Replacing is a whole-list write, so the tool asks for the complete new list, never a delta.
+
 ## Added in 0.10.1: a stale connection is not "the app is asleep"
 
 - **What happened (2026-10-08):** after hours of use the connection nostrclaw held to the signer went quietly dead. Every quick check failed and said "Clave is in the

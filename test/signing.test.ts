@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
-import { nip19 } from 'nostr-tools'
+import { finalizeEvent, nip19 } from 'nostr-tools'
 import { runDoctor, type Check } from '../src/doctor.js'
 import { createSigningContext } from '../src/signing/tools.js'
 import { realApi } from '../src/nostr/client.js'
@@ -533,6 +533,55 @@ describe.skipIf(!bin)('signing (real relay + pretend NIP-46 signer)', () => {
       const note = (await s.publishNote('to be deleted once')).published!.json
       const deletion = (await call(s.client, 'publish_event', { draftId: (await call(s.client, 'draft_deletion', { eventIds: [note.eventId] })).json.draftId })).json
       expect((await call(s.client, 'draft_deletion', { eventIds: [deletion.eventId] })).text).toMatch(/itself a deletion request|not found on the configured relays/)
+    })
+  })
+
+  describe('replacing your relay lists (NIP-65 and NIP-17)', () => {
+    const all = { allowedKinds: [1, 7, 5, 10002, 10050] }
+    const A = 'wss://a.example.net', B = 'wss://b.example.net', C = 'wss://c.example.net', OLD = 'wss://old.example.org'
+    const now = () => Math.floor(Date.now() / 1000)
+    const publishList = async (s: Awaited<ReturnType<typeof setup>>, kind: number, tags: string[][]) =>
+      relay.publish([finalizeEvent({ kind, content: '', created_at: now() - 100, tags }, s.fake.userSk)])
+    const newest = async (s: Awaited<ReturnType<typeof setup>>, kind: number) =>
+      ((await call(s.client, 'recent_events', { kinds: [kind], authors: [s.fake.userPk], limit: 1 })).json.untrusted.events as { tags: string[][] }[])[0]
+
+    it('is off by default and says how to turn it on; the generic draft cannot be used for it', async () => {
+      const s = await setup({ elicit: yes })
+      expect((await call(s.client, 'draft_relay_list', { kind: 10050, relays: [A] })).text).toMatch(/off in your policy: add 10050 to "allowedKinds"/)
+      expect((await call(s.client, 'draft_event', { kind: 10050, content: '', tags: [['relay', A]] })).text).toMatch(/use draft_relay_list/)
+      expect((await call(s.client, 'draft_event', { kind: 10002, content: '', tags: [['r', A]] })).text).toMatch(/use draft_relay_list/)
+    })
+
+    it('shows what is removed and added, asks with that in the question, and the relay ends up with the new list', async () => {
+      const questions: string[] = []
+      const s = await setup({ policy: all, extraRelays: [A, B, C], elicit: (m) => { questions.push(m); return { action: 'accept', content: { publish: true } } } })
+      await publishList(s, 10050, [['relay', A], ['relay', OLD]])
+      const d = await call(s.client, 'draft_relay_list', { kind: 10050, relays: [A, B] })
+      expect(d.json).toMatchObject({ found: true, removed: [OLD], added: [B], kept: [A], currentlyPublished: [A, OLD] })
+      expect(d.json.preview.tags).toEqual([['relay', A], ['relay', B]])
+      expect((await call(s.client, 'publish_event', { draftId: d.json.draftId })).json.published).toBe(true)
+      expect(questions[0]).toMatch(/Replacing your private-message relays.*removed: wss:\/\/old\.example\.org.*added: wss:\/\/b\.example\.net.*kept: wss:\/\/a\.example\.net/s)
+      expect(questions[0]).toMatch(/REPLACES your current relay list/); expect(questions[0]).not.toMatch(/cannot really be undone/)
+      expect((await newest(s, 10050))!.tags).toEqual([['relay', A], ['relay', B]])
+    })
+
+    it('keeps the read/write markers of relays that stay (NIP-65), and collapses duplicates', async () => {
+      const s = await setup({ policy: all, extraRelays: [A, B, C], elicit: yes })
+      await publishList(s, 10002, [['r', A, 'read'], ['r', B]])
+      const d = await call(s.client, 'draft_relay_list', { kind: 10002, relays: [A, A, B, C] })
+      expect(d.json.preview.tags).toEqual([['r', A, 'read'], ['r', B], ['r', C]])
+      expect(d.json).toMatchObject({ added: [C], removed: [] })
+    })
+
+    it('only names relays that are configured or already listed, only wss://, at most ten, and needs a connected signer', async () => {
+      const s = await setup({ policy: all, extraRelays: [A], elicit: yes })
+      await publishList(s, 10050, [['relay', OLD]])
+      expect((await call(s.client, 'draft_relay_list', { kind: 10050, relays: ['wss://evil.example.com'] })).text).toMatch(/not in NOSTRCLAW_RELAYS and is not in your current list/)
+      expect((await call(s.client, 'draft_relay_list', { kind: 10050, relays: ['ws://a.example.net'] })).text).toMatch(/only wss:\/\/ relays/)
+      expect((await call(s.client, 'draft_relay_list', { kind: 10050, relays: [OLD, A] })).json.kept).toEqual([OLD]) // already listed: it may stay
+      expect((await call(s.client, 'draft_relay_list', { kind: 10050, relays: Array.from({ length: 11 }, (_, i) => `wss://r${i}.example.net`) })).isError).toBe(true)
+      const idle = await setup({ policy: all, connected: false, elicit: yes })
+      expect((await call(idle.client, 'draft_relay_list', { kind: 10050, relays: [A] })).text).toMatch(/connect the signer first/)
     })
   })
 

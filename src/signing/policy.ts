@@ -74,5 +74,14 @@ export function checkDraft(policy: Policy, d: DraftInput): string | null {
     const wellFormed = (t: string[]) => t.length === 2 && ((t[0] === 'e' && /^[0-9a-f]{64}$/i.test(t[1] ?? '')) || (t[0] === 'k' && /^\d{1,5}$/.test(t[1] ?? '')))
     if (!d.tags.every(wellFormed)) return 'a deletion carries only e tags (64-character event ids) and k tags (kinds)'
   }
+  if (d.kind === 10002 || d.kind === 10050) { // relay lists: where people find your notes (NIP-65) or send you private messages (NIP-17); which relays may be named is checked where the list is built
+    if (d.content !== '') return 'a relay list has no content'
+    const name = d.kind === 10002 ? 'r' : 'relay'
+    const wss = (u: string | undefined) => typeof u === 'string' && /^wss:\/\/[^\s/]+(\/\S*)?$/.test(u) && u.length <= 200
+    if (d.tags.length < 1 || d.tags.length > 10) return 'a relay list names between 1 and 10 relays'
+    const ok = (t: string[]) => t[0] === name && wss(t[1]) && (t.length === 2 || (d.kind === 10002 && t.length === 3 && (t[2] === 'read' || t[2] === 'write')))
+    if (!d.tags.every(ok)) return d.kind === 10002 ? 'a relay list carries only ["r", "wss://…"] tags, optionally marked read or write' : 'a DM relay list carries only ["relay", "wss://…"] tags'
+    if (new Set(d.tags.map((t) => t[1])).size !== d.tags.length) return 'a relay list names each relay once'
+  }
   return null
 }

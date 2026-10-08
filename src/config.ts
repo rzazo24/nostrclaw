@@ -17,7 +17,7 @@
 import os from 'node:os'
 import path from 'node:path'
 
-export const VERSION = '0.10.1'
+export const VERSION = '0.11.0'
 export const DEFAULT_RELAY = 'wss://relay.hivescope.xyz'
 /** Clave (iOS) only receives background signing requests through this relay. */
 export const POWR_RELAY = 'wss://relay.powr.build'

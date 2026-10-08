@@ -49,6 +49,33 @@ describe('policy file', () => {
   })
 })
 
+describe('checkDraft: relay lists (kinds 10002 and 10050)', () => {
+  const p = () => ({ ...loadPolicy(cfg({ signing: { enabled: true, signerRelays: [], configDir: '/nonexistent/c', stateDir: '/nonexistent/s' } })), allowedKinds: [1, 7, 5, 10002, 10050] })
+  const r = (n: number) => `wss://relay${n}.example.net`
+  it('is refused unless the policy lists the kind', () => {
+    const off = loadPolicy(cfg({ signing: { enabled: true, signerRelays: [], configDir: '/nonexistent/c', stateDir: '/nonexistent/s' } }))
+    expect(checkDraft(off, { kind: 10002, content: '', tags: [['r', r(1)]] })).toMatch(/kind 10002 is not allowed/)
+    expect(checkDraft(off, { kind: 10050, content: '', tags: [['relay', r(1)]] })).toMatch(/kind 10050 is not allowed/)
+  })
+  it('accepts the right tag for each list, with read/write markers only on NIP-65', () => {
+    expect(checkDraft(p(), { kind: 10002, content: '', tags: [['r', r(1)], ['r', r(2), 'read'], ['r', r(3), 'write']] })).toBeNull()
+    expect(checkDraft(p(), { kind: 10050, content: '', tags: [['relay', r(1)], ['relay', r(2)]] })).toBeNull()
+    expect(checkDraft(p(), { kind: 10050, content: '', tags: [['r', r(1)]] })).toMatch(/only \["relay"/)
+    expect(checkDraft(p(), { kind: 10002, content: '', tags: [['relay', r(1)]] })).toMatch(/only \["r"/)
+    expect(checkDraft(p(), { kind: 10050, content: '', tags: [['relay', r(1), 'read']] })).toMatch(/only \["relay"/)
+    expect(checkDraft(p(), { kind: 10002, content: '', tags: [['r', r(1), 'sideways']] })).toMatch(/read or write/)
+  })
+  it('allows only wss:// relays, 1 to 10, each once, with no content', () => {
+    for (const bad of ['ws://relay.example.net', 'https://relay.example.net', 'wss://', 'wss://has space.example.net', 'relay.example.net']) {
+      expect(checkDraft(p(), { kind: 10002, content: '', tags: [['r', bad]] }), bad).toMatch(/only \["r"/)
+    }
+    expect(checkDraft(p(), { kind: 10002, content: '', tags: [] })).toMatch(/between 1 and 10/)
+    expect(checkDraft(p(), { kind: 10002, content: '', tags: Array.from({ length: 11 }, (_, i) => ['r', r(i)]) })).toMatch(/between 1 and 10/)
+    expect(checkDraft(p(), { kind: 10002, content: '', tags: [['r', r(1)], ['r', r(1)]] })).toMatch(/each relay once/)
+    expect(checkDraft(p(), { kind: 10002, content: 'hello', tags: [['r', r(1)]] })).toMatch(/no content/)
+  })
+})
+
 describe('checkDraft: deletions (kind 5)', () => {
   const p = () => loadPolicy(cfg({ signing: { enabled: true, signerRelays: [], configDir: '/nonexistent/c', stateDir: '/nonexistent/s' } }))
   const allowing = () => ({ ...p(), allowedKinds: [1, 7, 5] })
