@@ -9,6 +9,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { nip19 } from 'nostr-tools'
+import { VERSION } from '../src/config.js'
 import { realApi } from '../src/nostr/client.js'
 import { call, cfg, connect, ev, key } from './helpers.js'
 import { relayBinary, startRelay, type TestRelay } from './relay-harness.js'
@@ -145,6 +146,6 @@ describe.skipIf(!bin)('against the real relay', () => {
     expect(r.isError).toBeFalsy()
     expect(JSON.parse((r.content as { text: string }[])[0]!.text).returned).toBe(1)
     await client.close()
-    expect(stderr).toMatch(/nostrclaw 0\.11\.0 ready \(read-only\)/)
+    expect(stderr).toContain(`nostrclaw ${VERSION} ready (read-only)`)
   })
 })

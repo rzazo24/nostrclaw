@@ -121,7 +121,7 @@ event id, kind, content hash, relays and result. No content, no secrets, no URIs
   `relay.powr.build`, and the second relay in the link does no harm. An earlier theory (that listing the user's relay hurt background signing) was wrong.
   **Signing is different from resuming:** a signature request that reached Clave while it was in the background (the user on Termius on the same iPhone) showed up
   in Clave as "pending" with nothing the user could do with it, and expired unsigned. Every signature that worked was made with Clave already open on screen.
-  So: resuming works with a tap on the notification; **sign with Clave in the foreground**, ideally with Claude Code on a computer and the phone used only for Clave.
+  So, **with a `nostrconnect://` pairing**: resuming works with a tap on the notification; **sign with Clave in the foreground**, ideally with Claude Code on a computer and the phone used only for Clave. (With a `bunker://` pairing this advice no longer applies: see "Added in 0.12.0" below.)
   Not tested: whether a *medium trust* connection would answer `get_public_key` silently; it would also auto-approve kinds 1, 6 and 7, which is the unsafe choice.
 
 ## Added in 0.6.0
@@ -169,6 +169,26 @@ event id, kind, content hash, relays and result. No content, no secrets, no URIs
   audit log). If it does not, the held connection and the saved session are left exactly as they were, and the draft survives.
 - **A silence and an error both count as "no" on the held connection:** a dead connection can fail at once with a local error, which says nothing about the signer. An
   error *reply* is recognised only on the fresh connection, where it can only come from the signer (some signers do not know `ping`).
+
+## Added in 0.12.0: pairing through `bunker://` (`nostrclaw connect-bunker`)
+
+The measurements above (Clave must be on screen to resume, a blank notification to tap, signatures only with Clave in the foreground) were all taken with a
+`nostrconnect://` pairing. Clave's own documentation says it signs in the background for clients paired with a `bunker://` address, and the Quill client (same
+signer, same relay `relay.powr.build`) confirmed it, so 0.12.0 adds a way to pair that way without the address ever reaching the assistant.
+
+- **Why a command and not the tool.** `signer_connect` has always accepted a `bunker://` argument, but the address carries `secret=…`: passing it to a tool puts it in
+  the conversation. `nostrclaw connect-bunker --claude nostrclaw-sign` is run in the user's own terminal, reads the address without echo (or from a pipe), never prints
+  it (errors go through a redaction), and the server keeps its default block on `bunker://` / `secret=` in anything it would publish.
+- **What it changes on disk.** It pairs with a **new** app key (a failed attempt must not touch the old one), writes `signer.json` only when the signer has answered,
+  and copies the previous session to `signer.json.bak-before-bunker` first. That copy holds the old app key, a valid credential until the user revokes that connection
+  in the signer: delete the copy and revoke it once the new pairing is trusted.
+- **Trust level unchanged.** Nothing here asks for or assumes more trust: the signer stays on manual approval (*low trust*) and the confirmation question stays.
+- **Measured, 2026-10-09 (Clave on iPhone, *low trust*, `bunker://` pairing, Clave in the background).** After restarting Claude Code, `signer_connect` resumed the
+  saved session with the app in the background (no blank notification to tap, no app on screen). A kind 7 reaction was drafted, confirmed here, approved in Clave
+  and published to all six relays; the signer took 5.9 s, the time of a person approving. The "pending with nothing to do" request of 2026-10-06 did not happen.
+  **This was done from Termius on the same iPhone as Clave** (Claude Code on the server, reached over SSH from the phone), which is exactly the setup that failed on
+  2026-10-06 with a `nostrconnect://` pairing ("pending" with nothing to do, or "relay rejected response"). So the whole thing can now be done from one phone. It is still one
+  signature, one device and one day: worth repeating before relying on it.
 
 ## Known limitation
 

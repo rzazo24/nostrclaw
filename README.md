@@ -81,7 +81,7 @@ How it stays under your control:
 
 - **Your key never leaves your signer.** nostrclaw holds only an app key that identifies it to the signer, saved with mode `0600`.
 - **A human decides, through a channel the model cannot write to.** If your client supports it, `publish_event` asks *you* (MCP elicitation) showing the exact event, who signs it and where it goes; without an explicit yes nothing is signed. Your signer then asks for its own approval.
-- **Clave in the background:** with manual approval (*low trust*) Clave shows a **blank notification** and waits for you; tap it and approve. nostrclaw keeps asking for about two and a half minutes while you do.
+- **Clave in the background:** paired through a **`bunker://` address** (see above), Clave answered with the app in the background even at *low trust*: the connection resumed on its own and a signature request arrived to be approved (measured 2026-10-09, **running Claude Code from Termius on the same iPhone as Clave**, the setup that failed with `nostrconnect://`: one reaction, signed in about 6 s, published to 6 relays). Paired through a `nostrconnect://` link, with manual approval (*low trust*) Clave shows a **blank notification** and waits for you; tap it and approve, and for signing keep it open on screen. nostrclaw keeps asking for about two and a half minutes while you do.
 - **Use manual approval in the signer** (Clave: *low trust*). If the signer approves by itself, anything that can read the app key saved on your machine — including an assistant with a shell — could ask it for signatures with no prompt; nostrclaw warns when it sees that.
 - **“Always allow” is detected.** Without elicitation, the signer's approval is the lock — so it is verified: a signature that comes back faster than a person could decide (default 2 s) is **discarded and never published**, and further publishing is refused until you fix the signer and reconnect.
 - **Policy you own** (`~/.config/nostrclaw/policy.json`, no tool can write it): allowed kinds (default notes `1` and reactions `7` only; add `5` to let you delete your own events), signatures per hour (default 5; counts signatures actually made), maximum length, relays, and blocked patterns (anything that looks like an `nsec1…`, `bunker://`, `secret=`…). An invalid file stops the server.
@@ -95,6 +95,8 @@ claude mcp add nostrclaw -e NOSTRCLAW_ENABLE_SIGNING=1 -e NOSTRCLAW_RELAYS=wss:/
 ```
 
 Then ask Claude to *“connect my signer”*, open the link it gives you in Clave and approve (**do not choose “always allow”**), and ask it to *“draft a note saying …”*. The connection link lists `wss://relay.powr.build` as well as your relay, because Clave only receives background requests through that one.
+
+**Recommended instead for Clave on iPhone:** pair once with a `bunker://` address (section above) and skip this link.
 
 ## Safety model
 

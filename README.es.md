@@ -81,7 +81,7 @@ Cómo queda todo bajo tu control:
 
 - **Tu clave no sale de tu firmador.** nostrclaw solo guarda una clave de aplicación que lo identifica ante el firmador, con permisos `0600`.
 - **Decide una persona, por un canal que el modelo no puede escribir.** Si tu cliente lo soporta, `publish_event` te pregunta *a ti* (elicitación de MCP) enseñando el evento exacto, quién lo firma y adónde va; sin un sí explícito no se firma nada. Después tu firmador pide su propia aprobación.
-- **Clave en segundo plano:** con aprobación manual (*low trust*) Clave muestra una **notificación en blanco** y espera; púlsala y aprueba. nostrclaw sigue preguntando unos dos minutos y medio mientras lo haces.
+- **Clave en segundo plano:** emparejada con una **dirección `bunker://`** (mira más arriba), Clave contestó con la app en segundo plano incluso con *low trust*: la conexión se reanudó sola y llegó una petición de firma para aprobar (medido el 2026-10-09, **usando Claude Code desde Termius en el mismo iPhone que Clave**, la configuración que fallaba con `nostrconnect://`: una reacción, firmada en unos 6 s y publicada en 6 relés). Emparejada con un enlace `nostrconnect://`, con aprobación manual (*low trust*) Clave muestra una **notificación en blanco** y espera; púlsala y aprueba, y para firmar déjala abierta en pantalla. nostrclaw sigue preguntando unos dos minutos y medio mientras lo haces.
 - **Usa la aprobación manual del firmador** (Clave: *low trust*). Si el firmador aprueba solo, cualquier cosa que pueda leer la clave de aplicación guardada en tu máquina —incluido un asistente con terminal— podría pedirle firmas sin ninguna pregunta; nostrclaw avisa cuando lo detecta.
 - **Se detecta el «aprobar siempre».** Sin elicitación, la aprobación del firmador es la cerradura, así que se verifica: una firma que vuelve más rápido de lo que podría decidir una persona (por defecto 2 s) se **descarta y nunca se publica**, y se rechazan más publicaciones hasta que arregles el firmador y vuelvas a conectar.
 - **Una política tuya** (`~/.config/nostrclaw/policy.json`, ninguna herramienta puede escribirla): tipos permitidos (por defecto solo notas `1` y reacciones `7`; añade `5` para poder borrar tus propios eventos), firmas por hora (por defecto 5; cuenta las firmas realmente hechas), longitud máxima, relés y patrones bloqueados (todo lo que parezca un `nsec1…`, `bunker://`, `secret=`…). Un archivo inválido detiene el servidor.
@@ -95,6 +95,8 @@ claude mcp add nostrclaw -e NOSTRCLAW_ENABLE_SIGNING=1 -e NOSTRCLAW_RELAYS=wss:/
 ```
 
 Luego pídele a Claude que *«conecte mi firmador»*, abre el enlace que te da en Clave y aprueba (**no elijas «aprobar siempre»**), y pídele *«prepara una nota que diga …»*. El enlace de conexión incluye `wss://relay.powr.build` además de tu relé, porque Clave solo recibe peticiones en segundo plano por ese.
+
+**Recomendado para Clave en el iPhone:** empareja una vez con una dirección `bunker://` (sección anterior) y sáltate este enlace.
 
 ## Modelo de seguridad
 
