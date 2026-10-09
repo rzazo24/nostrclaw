@@ -67,6 +67,16 @@ Off by default. Enable it with `NOSTRCLAW_ENABLE_SIGNING=1` and nine more tools 
 | `publish_event` | Takes a draft id, first checks the signer is awake (a quick `ping`; if it gets no answer it rebuilds the connection once from the saved session and tries again, and only then says Clave is in the background — *before* asking you anything), then **asks you to confirm**, has your signer sign it and sends it to your relays |
 | `retry_publish` | Re-sends an event nostrclaw itself signed (kept 15 minutes) to the relays that did not accept it, **with no new signature**; at most 3 retries; it cannot send anything else |
 
+### Pairing through a `bunker://` address (recommended for Clave)
+
+A `nostrconnect://` link works, but on iPhone Clave only answers signature requests while it is open on screen. Paired through a `bunker://` address, Clave can be woken in the background by its push service. Copy the address from your signer, then run this **in your own terminal** (not through the assistant: the address carries a secret):
+
+```bash
+node dist/index.js connect-bunker --claude nostrclaw-sign   # asks for the address without showing it
+```
+
+It never prints the address or its secret, pairs with a **new** app key, and replaces the saved session only when the signer answers (the previous one is copied to `signer.json.bak-before-bunker`). Then restart Claude Code and call `signer_connect`: it resumes the saved session. The trust level you give it in the signer is your decision and does not change (keep it low: see the safety model).
+
 How it stays under your control:
 
 - **Your key never leaves your signer.** nostrclaw holds only an app key that identifies it to the signer, saved with mode `0600`.

@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { loadConfig, VERSION } from './config.js'
+import { runConnectBunker } from './connect.js'
 import { envFromClaudeJson, formatReport, runDoctor } from './doctor.js'
 import { createServer } from './server.js'
 
@@ -12,7 +13,13 @@ const USAGE = `nostrclaw ${VERSION}
 
   nostrclaw                      serve MCP over stdio (what Claude Code launches)
   nostrclaw doctor [options]     check the set-up and say what is wrong and how to fix it (read-only: never signs or publishes)
+  nostrclaw connect-bunker [options]  pair with your signer through a bunker:// address typed here (not through the assistant): the address has a secret,
+                                 so it is read without being shown and is never printed. Replaces the saved session only if the signer answers
   nostrclaw --version
+
+connect-bunker options:
+  --claude <name>       as for doctor, e.g. --claude nostrclaw-sign (signing must be enabled in that registration)
+  --claude-file <path>  use another Claude Code config file
 
 doctor options:
   --claude <name>       read the NOSTRCLAW_* settings of the MCP server registered in Claude Code as <name> (from ~/.claude.json),
@@ -42,6 +49,10 @@ async function doctor(args: string[]): Promise<number> {
 async function main(): Promise<void> {
   const args = process.argv.slice(2)
   if (args[0] === 'doctor') { process.exit(await doctor(args.slice(1))) }
+  if (args[0] === 'connect-bunker') {
+    if (args.includes('--help') || args.includes('-h')) { console.log(USAGE); return }
+    process.exit(await runConnectBunker(args.slice(1)))
+  }
   if (args[0] === '--version' || args[0] === '-v') { console.log(VERSION); return }
   if (args[0] === '--help' || args[0] === '-h') { console.log(USAGE); return }
   if (args.length) { console.error(`nostrclaw: unknown argument "${args[0]}"\n\n${USAGE}`); process.exit(2) }

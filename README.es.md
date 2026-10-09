@@ -67,6 +67,16 @@ Desactivado por defecto. Se activa con `NOSTRCLAW_ENABLE_SIGNING=1` y aparecen n
 | `publish_event` | Recibe el id de un borrador, primero comprueba que el firmador está despierto (un `ping` rápido; si no hay respuesta reconstruye la conexión una vez desde la sesión guardada y repite, y solo entonces dice que Clave está en segundo plano, *antes* de preguntarte nada), luego **te pide confirmación**, hace que tu firmador lo firme y lo envía a tus relés |
 | `retry_publish` | Reenvía un evento que nostrclaw firmó él mismo (se guarda 15 minutos) a los relés que no lo aceptaron, **sin nueva firma**; máximo 3 reintentos; no puede enviar nada más |
 
+### Emparejar con una dirección `bunker://` (recomendado para Clave)
+
+Un enlace `nostrconnect://` funciona, pero en iPhone Clave solo contesta a las peticiones de firma con la app abierta en pantalla. Emparejada con una dirección `bunker://`, su servicio de avisos puede despertarla en segundo plano. Copia la dirección de tu firmador y ejecuta esto **en tu propio terminal** (no a través del asistente: la dirección lleva un secreto):
+
+```bash
+node dist/index.js connect-bunker --claude nostrclaw-sign   # pide la dirección sin mostrarla
+```
+
+No imprime nunca la dirección ni su secreto, empareja con una clave de aplicación **nueva** y solo sustituye la sesión guardada si el firmador contesta (la anterior se copia a `signer.json.bak-before-bunker`). Después reinicia Claude Code y usa `signer_connect`: reanuda la sesión guardada. El nivel de confianza que le des en el firmador es decisión tuya y no cambia (mantenlo bajo: mira el modelo de seguridad).
+
 Cómo queda todo bajo tu control:
 
 - **Tu clave no sale de tu firmador.** nostrclaw solo guarda una clave de aplicación que lo identifica ante el firmador, con permisos `0600`.

@@ -32,5 +32,5 @@ RELAY_BIN=../nostr-relay-khatru/nostr-relay-khatru npm test   # includes the end
 
 ## Layout
 
-`src/signing/` (policy, NIP-46 session, tools, audit) · `src/server.ts` tools · pure modules (no network): `triage.ts`, `trust.ts`, `review.ts`, `compare.ts`, `compose.ts`, `text.ts`, `bursts.ts` · `src/doctor.ts` the read-only `nostrclaw doctor` · `src/analysis.ts` pure analysis (no network) · `src/safety.ts` allowlist and text cleaning · `src/nostr/client.ts` the only network code ·
+`src/connect.ts` (`connect-bunker`: pairs from a terminal so the bunker:// secret never goes through the assistant; hidden input, redacted errors, new app key, old session copied aside) · `src/signing/` (policy, NIP-46 session, tools, audit) · `src/server.ts` tools · pure modules (no network): `triage.ts`, `trust.ts`, `review.ts`, `compare.ts`, `compose.ts`, `text.ts`, `bursts.ts` · `src/doctor.ts` the read-only `nostrclaw doctor` · `src/analysis.ts` pure analysis (no network) · `src/safety.ts` allowlist and text cleaning · `src/nostr/client.ts` the only network code ·
 `test/` unit tests with a fake `NostrApi` (`tools.test.ts`) and end-to-end tests with the real relay (`e2e.test.ts`, `relay-harness.ts`).

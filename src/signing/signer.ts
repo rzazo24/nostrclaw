@@ -164,7 +164,7 @@ export class SignerManager {
   }
 
   /** Connects to a bunker:// URI the user provides (NIP-05 style addresses are not accepted: they would mean an HTTP lookup chosen by the caller). */
-  async connectBunker(input: string): Promise<void> {
+  async connectBunker(input: string, opts: { freshKey?: boolean } = {}): Promise<void> {
     const text = input.trim()
     if (!text.startsWith('bunker://')) throw new Error('expected a bunker://… URI')
     let url: URL
@@ -175,7 +175,8 @@ export class SignerManager {
     if (!relays.length) throw new Error('the bunker:// URI lists no relay')
     for (const r of relays) assertPublicHost(r, this.cfg)
     const secret = url.searchParams.get('secret')
-    const sk = this.clientKey()
+    // `freshKey`: a new app key that is written down only when the signer has accepted it, so a failed attempt leaves the saved session as it was
+    const sk = opts.freshKey ? generateSecretKey() : this.clientKey()
     this.state = 'connecting'
     this.lastError = undefined
     try {
