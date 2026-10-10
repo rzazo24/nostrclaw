@@ -98,6 +98,15 @@ Luego pídele a Claude que *«conecte mi firmador»*, abre el enlace que te da e
 
 **Recomendado para Clave en el iPhone:** empareja una vez con una dirección `bunker://` (sección anterior) y sáltate este enlace.
 
+### Un bunker propio en lugar de Clave (opcional)
+
+`connect-bunker` acepta la dirección `bunker://` de **cualquier** firmador NIP-46, también uno que tengas en tu propio servidor (el autor usa *hivescope-bunker*: la clave cifrada en disco, desbloqueada a mano tras cada reinicio, una conexión por aplicación con su lista de tipos y un límite por hora). El emparejamiento es el mismo: ejecuta `connect-bunker` en tu propio terminal y pega la dirección.
+
+Cambian dos cosas, y conviene decidirlas a conciencia:
+
+- **Tu clave vive (cifrada) en ese servidor**, no en el llavero de tu móvil. Quien tenga root en la máquina mientras el bunker está desbloqueado puede firmar dentro de los límites de la conexión.
+- **Ese firmador aprueba por política, no una persona**, así que sus firmas vuelven en una fracción de segundo. nostrclaw descarta una firma que llega más rápido que `minHumanApprovalMs` (por defecto 2000), porque eso suele significar «aprobar siempre» en un firmador que debía preguntar. Con un bunker propio es lo esperado: pon `"minHumanApprovalMs": 0` en `policy.json` (un archivo que solo editas tú). Lo que sigue en pie: `publish_event` te pregunta **a ti** antes de cada firma, por un canal que el modelo no puede escribir, y la propia conexión del bunker solo permite los tipos y el ritmo que le diste.
+
 ## Modelo de seguridad
 
 Un asistente que lee una red pública se expone a texto escrito por desconocidos, así que el diseño asume que **todo lo que viene de la red es hostil**:

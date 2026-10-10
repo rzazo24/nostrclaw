@@ -98,6 +98,15 @@ Then ask Claude to *“connect my signer”*, open the link it gives you in Clav
 
 **Recommended instead for Clave on iPhone:** pair once with a `bunker://` address (section above) and skip this link.
 
+### Your own bunker instead of Clave (optional)
+
+`connect-bunker` accepts the `bunker://` address of **any** NIP-46 signer, including one you run on your own server (the author uses *hivescope-bunker*: key encrypted on disk, unlocked by hand after each restart, one connection per app with its own list of kinds and an hourly limit). The pairing is the same: run `connect-bunker` in your own terminal and paste the address.
+
+Two things change, and you should decide them knowingly:
+
+- **Your key lives (encrypted) on that server**, not in your phone's keychain. Anyone with root on the machine while the bunker is unlocked can sign within the connection's limits.
+- **That signer approves by policy, not by a person**, so its signatures come back in a fraction of a second. nostrclaw discards a signature that arrives faster than `minHumanApprovalMs` (default 2000), because that usually means "approve always" on a signer that was supposed to ask. With a bunker of your own that is expected, so set `"minHumanApprovalMs": 0` in `policy.json` (a file only you can edit). What still stands: `publish_event` asks **you** before every signature, through a channel the model cannot write, and the bunker's own connection allows only the kinds and the rate you gave it.
+
 ## Safety model
 
 An assistant reading a public network is exposed to text written by strangers, so the design assumes **everything from the network is hostile**:
