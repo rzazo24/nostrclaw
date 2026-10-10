@@ -100,7 +100,7 @@ Then ask Claude to *“connect my signer”*, open the link it gives you in Clav
 
 ### Your own bunker instead of Clave (optional)
 
-`connect-bunker` accepts the `bunker://` address of **any** NIP-46 signer, including one you run on your own server (the author uses *hivescope-bunker*: key encrypted on disk, unlocked by hand after each restart, one connection per app with its own list of kinds and an hourly limit). The pairing is the same: run `connect-bunker` in your own terminal and paste the address.
+`connect-bunker` accepts the `bunker://` address of **any** NIP-46 signer, including one you run on your own server (the author uses [hivescope-bunker](https://github.com/rzazo24/hivescope-bunker): key encrypted on disk, unlocked by hand after each restart, one connection per app with its own list of kinds and an hourly limit). The pairing is the same: run `connect-bunker` in your own terminal and paste the address.
 
 Two things change, and you should decide them knowingly:
 

@@ -100,7 +100,7 @@ Luego pídele a Claude que *«conecte mi firmador»*, abre el enlace que te da e
 
 ### Un bunker propio en lugar de Clave (opcional)
 
-`connect-bunker` acepta la dirección `bunker://` de **cualquier** firmador NIP-46, también uno que tengas en tu propio servidor (el autor usa *hivescope-bunker*: la clave cifrada en disco, desbloqueada a mano tras cada reinicio, una conexión por aplicación con su lista de tipos y un límite por hora). El emparejamiento es el mismo: ejecuta `connect-bunker` en tu propio terminal y pega la dirección.
+`connect-bunker` acepta la dirección `bunker://` de **cualquier** firmador NIP-46, también uno que tengas en tu propio servidor (el autor usa [hivescope-bunker](https://github.com/rzazo24/hivescope-bunker): la clave cifrada en disco, desbloqueada a mano tras cada reinicio, una conexión por aplicación con su lista de tipos y un límite por hora). El emparejamiento es el mismo: ejecuta `connect-bunker` en tu propio terminal y pega la dirección.
 
 Cambian dos cosas, y conviene decidirlas a conciencia:
 
