@@ -1,7 +1,8 @@
 // The MCP server: tool definitions. Every tool is read-only and returns JSON text. Third-party text (event content, profile fields,
 // relay-provided descriptions) always sits under an "untrusted" key, next to a note telling the model to treat it as data only.
+import { readZap } from './zap.js'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
-import { nip19, type Event, type Filter } from 'nostr-tools'
+import { nip19, verifyEvent, type Event, type Filter } from 'nostr-tools'
 import { z } from 'zod'
 import { buildReport, kindName, parseProfile, viewEvent } from './analysis.js'
 import { VERSION, type Config } from './config.js'
@@ -350,9 +351,16 @@ export function createServer(cfg: Config, api: NostrApi = realApi, clock: () => 
     // Counted from the events themselves, not with NIP-45 COUNT: the relay's COUNT with a tag filter answers 0 even when matching events exist
     // (seen on khatru + sqlite), and a silent wrong zero is worse than an approximate number.
     const MAX = 500
-    const [found, refd] = await Promise.all([query(url, { ids: [id], limit: 1 }, 1), query(url, { '#e': [id], limit: MAX }, MAX)])
-    const tally = (ks: number[]) => refd.events.filter((e) => e.kind !== undefined && ks.includes(e.kind) && e.tags.some((t) => t[0] === 'e' && t[1] === id)).length
-    const counts = { replies: tally([1]), reactions: tally([7]), reposts: tally([6, 16]), zaps: tally([9735]) }
+    // NIP-22 comments (kind 1111) name the note they answer with a lower-case e (caught by #e) and the root of the thread with an upper-case E
+    const [found, refdE, refdRoot] = await Promise.all([query(url, { ids: [id], limit: 1 }, 1), query(url, { '#e': [id], limit: MAX }, MAX), query(url, { kinds: [1111], '#E': [id], limit: MAX }, MAX)])
+    const seenRef = new Set<string>()
+    const refd = { events: [...refdE.events, ...refdRoot.events].filter((e) => !seenRef.has(e.id) && seenRef.add(e.id)), eose: refdE.eose && refdRoot.eose }
+    const refersTo = (e: Event) => e.tags.some((t) => (t[0] === 'e' || (e.kind === 1111 && t[0] === 'E')) && t[1] === id)
+    const tally = (ks: number[]) => refd.events.filter((e) => e.kind !== undefined && ks.includes(e.kind) && refersTo(e)).length
+    const zapsRead = refd.events.filter((e) => e.kind === 9735).map((e) => readZap(e, verifyEvent)).filter((z): z is NonNullable<typeof z> => !!z && z.target === id)
+    const zapSenders = new Map<string | null, number>()
+    for (const z of zapsRead) zapSenders.set(z.sender, (zapSenders.get(z.sender) ?? 0) + z.sats)
+    const counts = { replies: tally([1]), comments: tally([1111]), reactions: tally([7]), reposts: tally([6, 16]), zaps: tally([9735]), zapSats: zapsRead.reduce((n, z) => n + z.sats, 0) }
     const approximate = refd.events.length >= MAX
     const source = `the ${refd.events.length} events that reference it${approximate ? ' (the limit was reached: real numbers may be higher)' : ''}`
     const sample = { events: refd.events.filter((e) => e.kind === 7) }
@@ -361,7 +369,8 @@ export function createServer(cfg: Config, api: NostrApi = realApi, clock: () => 
     for (const e of sample.events) { const k = cleanText(e.content.trim() || '+', 12); mix.set(k, (mix.get(k) ?? 0) + 1); people.add(e.pubkey) }
     const target: Event | undefined = found.events[0]
     return {
-      relay: url, id, foundOnThisRelay: !!target, counts, countedBy: source, countsAreApproximate: approximate || undefined, incomplete: !refd.eose || undefined,
+      relay: url, id, foundOnThisRelay: !!target, counts, countedBy: source,
+      zaps: zapsRead.length ? { sats: counts.zapSats, bySender: [...zapSenders].sort((x, y) => y[1] - x[1]).slice(0, 10).map(([pk, sats]) => ({ sender: pk ? nip19.npubEncode(pk) : 'unknown (no validly signed zap request matching this note and amount)', sats })), note: 'Amounts come from the paid invoices; a sender is named only when the signed zap request inside the receipt matches the note and the amount. Comments are NIP-22 kind 1111 replies, counted apart from classic kind 1 replies.' } : undefined, countsAreApproximate: approximate || undefined, incomplete: !refd.eose || undefined,
       reactions: { distinctPeople: people.size, sampleSize: sample.events.length, byContent: [...mix.entries()].sort((x, y) => y[1] - x[1]).slice(0, 8).map(([content, n]) => ({ content, n })), reactedToOwnEvent: target ? sample.events.some((e) => e.pubkey === target.pubkey) : undefined },
       untrusted: { event: target ? viewEvent(target, now, 400) : undefined },
       note: UNTRUSTED_NOTE,
@@ -574,14 +583,16 @@ export function createServer(cfg: Config, api: NostrApi = realApi, clock: () => 
     const now = clock(), id = parseEventId(a.eventId)
     const trusted = [...new Set((a.trusted ?? []).map(decodeKey))]
     const ask = makeAsker(urls)
-    const [targets, refsRaw] = await Promise.all([ask.askAll({ ids: [id], limit: 1 }, 1), ask.askAll({ '#e': [id], limit: 500 }, 500)])
+    const [targets, refsE, refsRoot] = await Promise.all([ask.askAll({ ids: [id], limit: 1 }, 1), ask.askAll({ '#e': [id], limit: 500 }, 500), ask.askAll({ kinds: [1111], '#E': [id], limit: 500 }, 500)])
     const target = targets.find((e) => e.id === id)
-    const refs = refsRaw.filter((e) => [1, 6, 7, 16, 9735].includes(e.kind) && e.tags.some((t) => t[0] === 'e' && t[1] === id))
+    const seenRef = new Set<string>()
+    const refs = [...refsE, ...refsRoot].filter((e) => !seenRef.has(e.id) && seenRef.add(e.id) && [1, 1111, 6, 7, 16, 9735].includes(e.kind) && e.tags.some((t) => (t[0] === 'e' || (e.kind === 1111 && t[0] === 'E')) && t[1] === id))
+    const zapsRead = refs.filter((e) => e.kind === 9735).map((e) => readZap(e, verifyEvent)).filter((z): z is NonNullable<typeof z> => !!z && z.target === id)
     const zaps = refs.filter((e) => e.kind === 9735).length // a zap receipt is signed by the lightning service, not by the person who zapped
     const mine = refs.filter((e) => e.kind !== 9735 && e.pubkey !== target?.pubkey)
     const byAuthor = new Map<string, Event[]>()
     for (const e of mine) byAuthor.set(e.pubkey, [...(byAuthor.get(e.pubkey) ?? []), e])
-    const rank = (es: Event[]) => (es.some((e) => e.kind === 1) ? 0 : es.some((e) => e.kind === 6 || e.kind === 16) ? 1 : 2)
+    const rank = (es: Event[]) => (es.some((e) => e.kind === 1 || e.kind === 1111) ? 0 : es.some((e) => e.kind === 6 || e.kind === 16) ? 1 : 2)
     const authors = [...byAuthor.entries()].sort((x, y) => rank(x[1]) - rank(y[1]) || Math.max(...y[1].map((e) => e.created_at)) - Math.max(...x[1].map((e) => e.created_at))).map(([pk]) => pk)
     const examined = authors.slice(0, a.maxAuthors)
     const rows = examined.length ? await trustFor(ask, examined, trusted, now) : []
@@ -599,7 +610,7 @@ export function createServer(cfg: Config, api: NostrApi = realApi, clock: () => 
     const count = (ks: number[]) => mine.filter((e) => ks.includes(e.kind)).length
     return {
       relays: urls, foundTarget: !!target, target: target ? { id, author: nip19.npubEncode(target.pubkey), ageMinutes: Math.max(0, Math.round((now - target.created_at) / 60)) } : undefined,
-      interactions: { replies: count([1]), reactions: count([7]), reposts: count([6, 16]), zaps, distinctPeople: authors.length },
+      interactions: { replies: count([1]), comments: count([1111]), reactions: count([7]), reposts: count([6, 16]), zaps, zapSats: zapsRead.reduce((n, z) => n + z.sats, 0), distinctPeople: authors.length },
       examined: people.length, notExamined: authors.length - people.length, byVerdict, incomplete: ask.incomplete() || undefined,
       people, thresholds: REVIEW,
       caveats: [

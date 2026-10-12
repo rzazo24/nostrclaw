@@ -134,6 +134,13 @@ describe.skipIf(!bin)('signing (real relay + pretend NIP-46 signer)', () => {
     expect(s.audit()[3]).toMatchObject({ approval: 'elicitation', eventId: published!.json.eventId, relays: { [relay.url]: 'ok' } })
   })
 
+  it('a draft says which #words became hashtags, so a "#word" written as an example can be caught before publishing', async () => {
+    const s = await setup()
+    const d = await call(s.client, 'draft_event', { kind: 1, content: 'a #tag also asks your relays, and #nostr is real' })
+    expect(d.json.hashtagsFromText).toEqual(['tag', 'nostr']); expect(d.json.hashtagCheck).toMatch(/#tag, #nostr/)
+    const none = await call(s.client, 'draft_event', { kind: 1, content: 'no hashtags here' })
+    expect(none.json.hashtagsFromText).toBeUndefined()
+  })
   it('does nothing when the user declines or cancels the question: nothing is signed or published', async () => {
     for (const answer of [no, () => ({ action: 'cancel' as const }), () => ({ action: 'accept' as const, content: { publish: false } })]) {
       const s = await setup({ elicit: answer })

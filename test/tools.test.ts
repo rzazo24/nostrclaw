@@ -281,7 +281,22 @@ describe('event_engagement', () => {
     const refs = [ev(a, 7, '+', NOW - 5, [['e', target.id]]), ev(a, 7, '+', NOW - 4, [['e', 'cd'.repeat(32)]])]
     const { client } = await setup({ async query(_r, f) { const x = f as { ids?: string[] }; return { events: x.ids ? [target] : refs, eose: true, notices: [], invalid: 0, ms: 1 } } })
     const r = await call(client, 'event_engagement', { id: nip19.noteEncode(target.id) })
-    expect(r.json.counts).toEqual({ replies: 0, reactions: 1, reposts: 0, zaps: 0 })
+    expect(r.json.counts).toEqual({ replies: 0, comments: 0, reactions: 1, reposts: 0, zaps: 0, zapSats: 0 })
+  })
+  it('counts NIP-22 comments (kind 1111) apart, the ones further down the thread (upper-case E) included, and the sats of zaps with their checked sender', async () => {
+    const author = key(), c1 = key(), c2 = key(), zapper = key(), service = key()
+    const target = ev(author, 1, 'hello', NOW - 100)
+    const direct = ev(c1, 1111, 'a comment', NOW - 50, [['E', target.id], ['K', '1'], ['e', target.id], ['k', '1'], ['p', author.pk]])
+    const nested = ev(c2, 1111, 'a comment on the comment', NOW - 40, [['E', target.id], ['K', '1'], ['e', direct.id], ['k', '1111'], ['p', c1.pk]])
+    const request = ev(zapper, 9734, '', NOW - 30, [['e', target.id], ['p', author.pk], ['amount', '21000']])
+    const receipt = ev(service, 9735, '', NOW - 29, [['e', target.id], ['p', author.pk], ['bolt11', 'lnbc210n1abc'], ['description', JSON.stringify(request)]])
+    const { client } = await setup({ async query(_r, f) {
+      const x = f as { ids?: string[]; '#E'?: string[] }
+      return { events: x.ids ? [target] : x['#E'] ? [direct, nested] : [direct, receipt], eose: true, notices: [], invalid: 0, ms: 1 }
+    } })
+    const r = await call(client, 'event_engagement', { id: target.id })
+    expect(r.json.counts).toMatchObject({ replies: 0, comments: 2, zaps: 1, zapSats: 21 })
+    expect(r.json.zaps.bySender).toEqual([{ sender: nip19.npubEncode(zapper.pk), sats: 21 }])
   })
   it('marks the numbers as approximate when the sample limit is reached', async () => {
     const a = key(), target = ev(a, 1, 'popular', NOW - 10)

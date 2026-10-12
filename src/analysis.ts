@@ -7,7 +7,7 @@ import { clusterTexts, repeated } from './text.js'
 
 export const KIND_NAMES: Record<number, string> = {
   0: 'profile', 1: 'note', 3: 'follow list', 4: 'direct message (legacy)', 5: 'deletion', 6: 'repost', 7: 'reaction', 13: 'seal', 14: 'direct message',
-  16: 'generic repost', 40: 'channel', 42: 'channel message', 1059: 'gift wrap', 1063: 'file metadata', 1984: 'report', 9734: 'zap request', 9735: 'zap',
+  16: 'generic repost', 40: 'channel', 42: 'channel message', 1059: 'gift wrap', 1063: 'file metadata', 1111: 'comment', 1984: 'report', 9734: 'zap request', 9735: 'zap',
   10000: 'mute list', 10002: 'relay list', 10050: 'DM relay list', 22242: 'relay auth', 24133: 'remote signing', 27235: 'HTTP auth',
   30000: 'people list', 30023: 'long-form article', 30078: 'app data',
 }

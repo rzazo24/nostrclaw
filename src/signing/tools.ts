@@ -111,8 +111,15 @@ export function registerSigningTools(server: McpServer, cfg: Config, api: NostrA
     if (a.kind === 10002 || a.kind === 10050) throw new Error('a relay list is not drafted by hand: use draft_relay_list, which shows what changes and only names relays you have configured or already list')
     // in a note, #hashtags and nostr:npub… mentions become tags (the user sees them in the draft); other kinds are left exactly as given
     const tags = a.kind === 1 ? mergeTags(a.tags, [...hashtagTags(a.content), ...mentionTags(a.content)]) : a.tags
-    return createDraft({ kind: a.kind, content: a.content, tags })
+    return createDraft({ kind: a.kind, content: a.content, tags }, undefined, a.kind === 1 ? hashtagCheck(a.content) : {})
   }))
+
+  /** Which #words of the text became hashtags (t tags): said out loud, because a "#word" written as an example in a sentence ("a #tag also…")
+   *  becomes a tag too, and the user should be able to catch it before publishing. */
+  function hashtagCheck(content: string): Record<string, unknown> {
+    const tags = hashtagTags(content).map((t) => t[1])
+    return tags.length ? { hashtagsFromText: tags, hashtagCheck: `These words written with # became hashtags (the note will show up under them): ${tags.map((x) => '#' + x).join(', ')}. If one was not meant as a hashtag, say so to the user and rephrase it (e.g. "a hashtag" instead of "a #tag").` } : {}
+  }
 
   /** Checks a template against the policy, stores it as a draft and returns what the user needs to see. */
   function createDraft(t: { kind: number; content: string; tags: string[][] }, context?: string, extra: Record<string, unknown> = {}) {
@@ -180,7 +187,7 @@ export function registerSigningTools(server: McpServer, cfg: Config, api: NostrA
     const { event, foundOn } = await findEvent(a.eventId)
     const tags = mergeTags(replyTags(event), [...hashtagTags(a.content), ...mentionTags(a.content)])
     return createDraft({ kind: 1, content: a.content, tags }, `Replying to ${excerptOf(event)}`,
-      { target: { id: event.id, author: nip19.npubEncode(event.pubkey), kind: event.kind, foundOn }, untrusted: { targetExcerpt: cleanText(event.content, 200) } })
+      { target: { id: event.id, author: nip19.npubEncode(event.pubkey), kind: event.kind, foundOn }, untrusted: { targetExcerpt: cleanText(event.content, 200) }, ...hashtagCheck(a.content) })
   }))
 
   server.registerTool('draft_deletion', {
