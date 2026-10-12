@@ -496,9 +496,10 @@ export function createServer(cfg: Config, api: NostrApi = realApi, clock: () => 
       engage: await ask.askAll({ kinds: [1, 6, 7, 16], '#p': c, limit: 500 }, 500),
       own: await ask.askAll({ authors: c, limit: 500 }, 500),
       profiles: await ask.askAll({ kinds: [0], authors: c, limit: 100 }, 100), // not among the newest 500 events of a busy author
+      mutes: trusted.length ? await ask.askAll({ kinds: [10000], '#p': c, limit: 500 }, 500) : [], // mute lists naming them: who in the network muted them
     })))
     const follows = perChunk.flatMap((c) => c.follows), engage = perChunk.flatMap((c) => c.engage)
-    const ownEvents = perChunk.flatMap((c) => c.own), profileEvents = perChunk.flatMap((c) => c.profiles)
+    const ownEvents = perChunk.flatMap((c) => c.own), profileEvents = perChunk.flatMap((c) => c.profiles), muteEvents = perChunk.flatMap((c) => c.mutes).filter((e) => e.kind === 10000)
     const followers = followersOf(follows, keys)
     // second level: how many keys follow each follower (bounded)
     const followerUnion = [...new Set([...followers.values()].flatMap((x) => [...x]))].slice(0, 200)
@@ -512,8 +513,10 @@ export function createServer(cfg: Config, api: NostrApi = realApi, clock: () => 
     return keys.map((pk) => {
       const fs = followers.get(pk) ?? new Set<string>()
       const established = [...fs].filter((f) => (followersOfFollowers.get(f)?.size ?? 0) >= ESTABLISHED_FOLLOWERS).length
-      const seedDistance = trusted.includes(pk) ? 0 as const : followedByTrusted.has(pk) ? 1 as const : [...fs].some((f) => followedByTrusted.has(f)) ? 2 as const : undefined
-      const facts = { followers: fs.size, establishedFollowers: established, seedDistance, engagers: engagersOf(engage, pk), oldestSeen: oldest.get(pk), hasProfile: profiles.has(pk), now }
+      const seedDistance = trusted.includes(pk) ? 0 as const : followedByTrusted.has(pk) ? 1 as const : undefined
+      const networkFollowers = [...fs].filter((f) => followedByTrusted.has(f)).length
+      const mutedByNetwork = [...newestPerAuthor(muteEvents.filter((e) => followedByTrusted.has(e.pubkey)))].filter(([, e]) => e.tags.some((t) => t[0] === 'p' && t[1] === pk)).length
+      const facts = { followers: fs.size, establishedFollowers: established, seedDistance, networkFollowers, mutedByNetwork, engagers: engagersOf(engage, pk), oldestSeen: oldest.get(pk), hasProfile: profiles.has(pk), now }
       return { pubkey: pk, facts, trust: scoreTrust(facts), own: ownEvents.filter((e) => e.pubkey === pk) }
     })
   }

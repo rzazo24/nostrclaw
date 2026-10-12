@@ -6,6 +6,8 @@ Un servidor [MCP](https://modelcontextprotocol.io) que permite a Claude **analiz
 
 Escrito en TypeScript sobre el SDK oficial de MCP y `nostr-tools`. Funciona en local por stdio (Claude Code, Claude Desktop) y solo habla con los relés que permitas.
 
+> **0.14.0:** el nivel de la puntuación de confianza sale ahora solo de la red de las claves de confianza (la sigue una clave de confianza o 3+ claves a las que siguen → asentada; una → algo; ninguna → desconocida), y que esa red la haya silenciado resta puntos y baja el nivel. Medido con cuentas reales: la regla anterior daba «algo» a 13 de 15 cuentas de spam, la nueva a ninguna. La misma regla que Quill.
+
 ## Puesta en marcha
 
 ```bash

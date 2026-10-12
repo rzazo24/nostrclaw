@@ -1,8 +1,9 @@
 // A web-of-trust style score for keys, from what the relays hold about who follows whom and who interacts with whom. Pure functions.
 //
-// What it is NOT: a verdict, an identity check, or manipulation-proof. Anyone can create keys that follow each other; the points that are hardest
-// to fake (being followed by keys that are themselves followed, and being close to keys the user trusts) weigh most. "unknown" means "nothing
-// vouches for this key on these relays", never "bad".
+// What it is NOT: a verdict, an identity check, or manipulation-proof. Anyone can create keys that follow each other: measured on real accounts
+// (2026-10-12), counting followers, "established" followers and engagers rated 13 of 15 spam accounts "some" — bot rings inflate exactly those. So
+// the LEVEL now comes only from the trusted keys' network (who the trusted keys are, who they follow, and how many of those follow or MUTE this key);
+// the rest only fine-tunes the number. "unknown" means "nothing in the trusted keys' network vouches for it", never "bad". Same rules as Quill.
 import type { Event } from 'nostr-tools'
 
 export type TrustLevel = 'established' | 'some' | 'unknown'
@@ -12,8 +13,12 @@ export interface TrustFacts {
   followers: number
   /** Of those, how many are themselves followed by at least `ESTABLISHED_FOLLOWERS` keys. */
   establishedFollowers: number
-  /** 0 = it IS a trusted key, 1 = a trusted key follows it, 2 = followed by someone a trusted key follows, undefined = none / no trusted keys given. */
-  seedDistance?: 0 | 1 | 2
+  /** 0 = it IS a trusted key, 1 = a trusted key follows it, undefined = neither / no trusted keys given. */
+  seedDistance?: 0 | 1
+  /** How many of the keys the trusted keys follow ("the network") follow it. */
+  networkFollowers: number
+  /** How many keys of the network have it in their (public, newest) mute list. */
+  mutedByNetwork: number
   /** Distinct OTHER keys that replied to, reacted to, reposted or mentioned it. */
   engagers: number
   /** Unix time of the oldest event seen from it (only the newest few hundred are read, so this is the oldest of those). */
@@ -25,13 +30,15 @@ export interface TrustFacts {
 export const ESTABLISHED_FOLLOWERS = 3
 export const DAY = 86400
 
-/** The weights, in one place so the documentation and the tests can quote them. */
+/** The weights, in one place so the documentation and the tests can quote them. Quill uses the same (src/data/trust.ts there): change both or neither. */
 export const TRUST_WEIGHTS = {
-  isTrusted: 60, followedByTrusted: 40, followedByFollowedByTrusted: 20,
-  followers1: 5, followers5: 10, followers20: 15,
-  established1: 5, established5: 10, established15: 15,
-  engagers1: 5, engagers3: 10,
-  seenOver7Days: 5, seenOver30Days: 10, hasProfile: 5,
+  isTrusted: 60, followedByTrusted: 40,
+  network1: 25, network3: 32, network10: 40,
+  followers1: 2, followers5: 5, followers20: 8,
+  established1: 4, established5: 8, established15: 12,
+  engagers1: 4, engagers3: 8,
+  seenOver7Days: 4, seenOver30Days: 8, hasProfile: 4,
+  mutedBy1: -15, mutedBy3: -30, mutedBy5: -50,
 } as const
 
 export interface TrustScore { score: number; level: TrustLevel; reasons: string[] }
@@ -40,31 +47,31 @@ export function scoreTrust(f: TrustFacts): TrustScore {
   const W = TRUST_WEIGHTS
   const reasons: string[] = []
   let score = 0
-  const add = (points: number, why: string) => { score += points; reasons.push(`+${points} ${why}`) }
-
+  const add = (points: number, why: string) => { score += points; reasons.push(`${points >= 0 ? '+' : ''}${points} ${why}`) }
   if (f.seedDistance === 0) add(W.isTrusted, 'is one of the trusted keys you gave')
   else if (f.seedDistance === 1) add(W.followedByTrusted, 'a trusted key follows it')
-  else if (f.seedDistance === 2) add(W.followedByFollowedByTrusted, 'followed by someone a trusted key follows')
-
+  const k = f.networkFollowers
+  const kWhy = `${k} key${k === 1 ? '' : 's'} that a trusted key follows ${k === 1 ? 'follows' : 'follow'} it`
+  if (k >= 10) add(W.network10, kWhy); else if (k >= 3) add(W.network3, kWhy); else if (k >= 1) add(W.network1, kWhy)
   if (f.followers >= 20) add(W.followers20, `followed by ${f.followers} keys on these relays`)
   else if (f.followers >= 5) add(W.followers5, `followed by ${f.followers} keys on these relays`)
   else if (f.followers >= 1) add(W.followers1, `followed by ${f.followers} key${f.followers > 1 ? 's' : ''} on these relays`)
-
   if (f.establishedFollowers >= 15) add(W.established15, `${f.establishedFollowers} of its followers are themselves followed by ${ESTABLISHED_FOLLOWERS}+ keys`)
   else if (f.establishedFollowers >= 5) add(W.established5, `${f.establishedFollowers} of its followers are themselves followed by ${ESTABLISHED_FOLLOWERS}+ keys`)
   else if (f.establishedFollowers >= 1) add(W.established1, `${f.establishedFollowers} of its followers is itself followed by ${ESTABLISHED_FOLLOWERS}+ keys`)
-
   if (f.engagers >= 3) add(W.engagers3, `${f.engagers} different keys replied, reacted or mentioned it`)
   else if (f.engagers >= 1) add(W.engagers1, `${f.engagers} other key replied, reacted or mentioned it`)
-
   const ageDays = f.oldestSeen === undefined ? undefined : (f.now - f.oldestSeen) / DAY
   if (ageDays !== undefined && ageDays >= 30) add(W.seenOver30Days, `seen on these relays for over 30 days (${Math.floor(ageDays)} d)`)
   else if (ageDays !== undefined && ageDays >= 7) add(W.seenOver7Days, `seen on these relays for over a week (${Math.floor(ageDays)} d)`)
-
   if (f.hasProfile) add(W.hasProfile, 'has a profile (kind 0) on these relays')
-
-  score = Math.min(100, score)
-  return { score, level: score >= 60 ? 'established' : score >= 25 ? 'some' : 'unknown', reasons }
+  const m = f.mutedByNetwork
+  const mWhy = `muted by ${m} key${m === 1 ? '' : 's'} that a trusted key follows`
+  if (m >= 5) add(W.mutedBy5, mWhy); else if (m >= 3) add(W.mutedBy3, mWhy); else if (m >= 1) add(W.mutedBy1, mWhy)
+  score = Math.max(0, Math.min(100, score))
+  let level: TrustLevel = f.seedDistance !== undefined || k >= 3 ? 'established' : k >= 1 ? 'some' : 'unknown'
+  if (m >= 5) level = 'unknown'; else if (m >= 3) level = level === 'established' ? 'some' : 'unknown'
+  return { score, level, reasons }
 }
 
 /** The newest event per author (replaceable kinds: only the latest list counts). */

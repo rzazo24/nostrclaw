@@ -464,11 +464,16 @@ describe('trust_score', () => {
     expect((await call(client, 'trust_score', { pubkeys: [busy.pk] })).json.keys[0].facts.hasProfile).toBe(true)
   })
 
-  it('a key two steps from a trusted one gets the smaller bonus', async () => {
+  it('a key followed by someone a trusted key follows has network backing ("some"); muted by that network, it loses it', async () => {
     const [me, mid, target] = [key(), key(), key()]
     const { client } = await setup(memory([follows(me, [mid.pk]), follows(mid, [target.pk])]))
     const r = (await call(client, 'trust_score', { pubkeys: [target.pk], trusted: [me.pk] })).json
-    expect(r.keys[0].facts.seedDistance).toBe(2)
+    expect(r.keys[0].facts).toMatchObject({ networkFollowers: 1, mutedByNetwork: 0 }); expect(r.keys[0].level).toBe('some')
+    const [m2, m3, m4] = [key(), key(), key()]
+    const mutes = [m2, m3, m4].map((k) => ev(k, 10000, '', NOW - 50, [['p', target.pk]]))
+    const { client: c2 } = await setup(memory([follows(me, [mid.pk, m2.pk, m3.pk, m4.pk]), follows(mid, [target.pk]), ...mutes]))
+    const r2 = (await call(c2, 'trust_score', { pubkeys: [target.pk], trusted: [me.pk] })).json
+    expect(r2.keys[0].facts.mutedByNetwork).toBe(3); expect(r2.keys[0].level).toBe('unknown')
   })
 
   it('with no pubkeys it examines only the NEW keys of the window', async () => {

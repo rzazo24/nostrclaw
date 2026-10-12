@@ -3,7 +3,7 @@ import { engagersOf, followedBySeeds, followersOf, newestPerAuthor, scoreTrust, 
 import { ev, key } from './helpers.js'
 
 const NOW = 1_800_000_000
-const base: TrustFacts = { followers: 0, establishedFollowers: 0, engagers: 0, hasProfile: false, now: NOW }
+const base: TrustFacts = { followers: 0, establishedFollowers: 0, networkFollowers: 0, mutedByNetwork: 0, engagers: 0, hasProfile: false, now: NOW }
 const follows = (k: ReturnType<typeof key>, who: string[], t = NOW - 100) => ev(k, 3, '', t, who.map((p) => ['p', p]))
 
 describe('scoreTrust', () => {
@@ -11,19 +11,24 @@ describe('scoreTrust', () => {
     expect(scoreTrust(base)).toEqual({ score: 0, level: 'unknown', reasons: [] })
   })
   it('closeness to a trusted key weighs most, and every point has its reason', () => {
-    const r = scoreTrust({ ...base, seedDistance: 1, followers: 6, establishedFollowers: 2, engagers: 4, oldestSeen: NOW - 40 * 86400, hasProfile: true })
-    expect(r.score).toBe(W.followedByTrusted + W.followers5 + W.established1 + W.engagers3 + W.seenOver30Days + W.hasProfile)
+    const r = scoreTrust({ ...base, seedDistance: 1, networkFollowers: 4, followers: 6, establishedFollowers: 2, engagers: 4, oldestSeen: NOW - 40 * 86400, hasProfile: true })
+    expect(r.score).toBe(Math.min(100, W.followedByTrusted + W.network3 + W.followers5 + W.established1 + W.engagers3 + W.seenOver30Days + W.hasProfile))
     expect(r.level).toBe('established')
-    expect(r.reasons).toHaveLength(6); expect(r.reasons[0]).toMatch(/^\+40 a trusted key follows it/)
+    expect(r.reasons).toHaveLength(7); expect(r.reasons[0]).toMatch(/^\+40 a trusted key follows it/); expect(r.reasons[1]).toMatch(/4 keys that a trusted key follows follow it/)
   })
-  it('followers that are not themselves followed barely count: a ring of throw-away keys stays "unknown"', () => {
-    const r = scoreTrust({ ...base, followers: 30, establishedFollowers: 0 })
-    expect(r.score).toBe(W.followers20); expect(r.level).toBe('unknown')
+  it('the LEVEL comes from the trusted keys\' network: a ring of fake keys with many followers, engagement and age stays "unknown"', () => {
+    const ring = scoreTrust({ ...base, followers: 500, establishedFollowers: 80, engagers: 90, oldestSeen: NOW - 100 * 86400, hasProfile: true })
+    expect(ring.level).toBe('unknown'); expect(ring.score).toBe(W.followers20 + W.established15 + W.engagers3 + W.seenOver30Days + W.hasProfile)
+    expect(scoreTrust({ ...base, networkFollowers: 1 }).level).toBe('some'); expect(scoreTrust({ ...base, networkFollowers: 3 }).level).toBe('established')
   })
-  it('is capped at 100 and the levels have thresholds', () => {
-    expect(scoreTrust({ ...base, seedDistance: 0, followers: 99, establishedFollowers: 99, engagers: 99, oldestSeen: 0, hasProfile: true }).score).toBe(100)
-    expect(scoreTrust({ ...base, followers: 5, engagers: 1, establishedFollowers: 1, hasProfile: true }).level).toBe('some') // 10+5+5+5 = 25
-    expect(scoreTrust({ ...base, followers: 5 }).level).toBe('unknown')
+  it('being muted by the network takes points and lowers the level; never below 0', () => {
+    const r = scoreTrust({ ...base, networkFollowers: 4, mutedByNetwork: 3 })
+    expect(r.level).toBe('some'); expect(r.reasons.at(-1)).toMatch(/^-30 muted by 3 keys that a trusted key follows/)
+    expect(scoreTrust({ ...base, seedDistance: 1, networkFollowers: 9, mutedByNetwork: 5 }).level).toBe('unknown')
+    expect(scoreTrust({ ...base, mutedByNetwork: 9 }).score).toBe(0)
+  })
+  it('is capped at 100', () => {
+    expect(scoreTrust({ ...base, seedDistance: 0, networkFollowers: 99, followers: 99, establishedFollowers: 99, engagers: 99, oldestSeen: 0, hasProfile: true }).score).toBe(100)
   })
   it('a week of presence is worth less than a month', () => {
     expect(scoreTrust({ ...base, oldestSeen: NOW - 8 * 86400 }).score).toBe(W.seenOver7Days)

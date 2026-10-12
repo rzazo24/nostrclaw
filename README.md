@@ -6,6 +6,8 @@ An [MCP](https://modelcontextprotocol.io) server that lets Claude **analyse a No
 
 Written in TypeScript on the official MCP SDK and `nostr-tools`. It runs locally over stdio (Claude Code, Claude Desktop) and talks to the relays you allow, nothing else.
 
+> **0.14.0:** the trust score's level now comes from the trusted keys' network only (a trusted key or 3+ keys they follow follow it → established; one → some; none → unknown), and being muted by that network takes points and lowers it. Measured on real accounts: the old rule rated 13 of 15 spam accounts "some", the new one none. Same rule as Quill.
+
 ## Quick start
 
 ```bash
