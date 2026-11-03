@@ -23,7 +23,8 @@ export function ev(k: { sk: Uint8Array }, kind: number, content: string, created
 }
 
 /** An MCP client connected to a server in the same process. */
-export type Elicit = (message: string) => { action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> }
+type ElicitAnswer = { action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> }
+export type Elicit = (message: string) => ElicitAnswer | Promise<ElicitAnswer>
 
 /** `elicit` makes the client support (and answer) the server's questions to the user, as Claude Code's UI would. */
 export async function connect(c: Config, api?: NostrApi, clock?: () => number, elicit?: Elicit, signing?: SigningContext) {

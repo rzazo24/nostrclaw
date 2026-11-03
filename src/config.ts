@@ -17,7 +17,7 @@
 import os from 'node:os'
 import path from 'node:path'
 
-export const VERSION = '0.14.0'
+export const VERSION = '0.14.1'
 export const DEFAULT_RELAY = 'wss://relay.hivescope.xyz'
 /** Clave (iOS) only receives background signing requests through this relay. */
 export const POWR_RELAY = 'wss://relay.powr.build'
@@ -41,6 +41,8 @@ export interface SigningConfig {
   resumeWaitMs?: number
   /** How long the quick "is the signer awake?" check before a publication waits (default 10 s; tests shorten it). */
   pingWaitMs?: number
+  /** A confirmation question cancelled faster than this was never shown to a person (default 2 s; tests shorten it). */
+  fastCancelMs?: number
 }
 
 function signerRelays(env: Record<string, string | undefined>, relays: string[]): string[] {

@@ -22,14 +22,14 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const yes: Elicit = () => ({ action: 'accept', content: { publish: true } })
 const no: Elicit = () => ({ action: 'decline' })
 
-interface Opts { api?: NostrApi; extraRelays?: string[]; pingWaitMs?: number; identityWaitMs?: number; resumeWaitMs?: number; policy?: Record<string, unknown>; signer?: Partial<Behaviour>; elicit?: Elicit; dirs?: { config: string; state: string }; connected?: boolean }
+interface Opts { api?: NostrApi; extraRelays?: string[]; pingWaitMs?: number; identityWaitMs?: number; resumeWaitMs?: number; fastCancelMs?: number; policy?: Record<string, unknown>; signer?: Partial<Behaviour>; elicit?: Elicit; dirs?: { config: string; state: string }; connected?: boolean }
 
 async function setup(o: Opts = {}) {
   const config = o.dirs?.config ?? fs.mkdtempSync(path.join(os.tmpdir(), 'nc-config-'))
   const state = o.dirs?.state ?? fs.mkdtempSync(path.join(os.tmpdir(), 'nc-state-'))
   // a person takes longer than 500 ms to decide in these tests; an "always allow" signer answers at once (the wide gap keeps a slow CI machine from confusing them)
   fs.writeFileSync(path.join(config, 'policy.json'), JSON.stringify({ minHumanApprovalMs: 500, signTimeoutMs: 2500, ...o.policy }))
-  const c: Config = cfg({ relays: [relay.url, ...(o.extraRelays ?? [])], allowPrivate: true, timeoutMs: 5000, signing: { enabled: true, signerRelays: [relay.url], configDir: config, stateDir: state, identityWaitMs: o.identityWaitMs, resumeWaitMs: o.resumeWaitMs, pingWaitMs: o.pingWaitMs } })
+  const c: Config = cfg({ relays: [relay.url, ...(o.extraRelays ?? [])], allowPrivate: true, timeoutMs: 5000, signing: { enabled: true, signerRelays: [relay.url], configDir: config, stateDir: state, identityWaitMs: o.identityWaitMs, resumeWaitMs: o.resumeWaitMs, pingWaitMs: o.pingWaitMs, fastCancelMs: o.fastCancelMs ?? 100 } })
   const fake = new FakeSigner(o.signer)
   const ctx = createSigningContext(c) // kept so a test can reach the signer session (for instance to kill its connection)
   const conn = await connect(c, o.api, undefined, o.elicit, ctx)
@@ -142,13 +142,32 @@ describe.skipIf(!bin)('signing (real relay + pretend NIP-46 signer)', () => {
     expect(none.json.hashtagsFromText).toBeUndefined()
   })
   it('does nothing when the user declines or cancels the question: nothing is signed or published', async () => {
-    for (const answer of [no, () => ({ action: 'cancel' as const }), () => ({ action: 'accept' as const, content: { publish: false } })]) {
+    for (const answer of [no, async () => { await sleep(200); return { action: 'cancel' as const } }, () => ({ action: 'accept' as const, content: { publish: false } })]) {
       const s = await setup({ elicit: answer })
       const { published } = await s.publishNote(`declined ${Math.random()}`)
       expect(published!.isError).toBe(true); expect(published!.text).toMatch(/did not confirm/)
       expect(s.fake.signRequests).toBe(0)
       expect(s.audit().map((e) => e.step)).toEqual(['draft', 'declined'])
     }
+  })
+
+  it('a question the client cancels at once (a background session) is reported as not shown, and the next draft warns about it', async () => {
+    const s = await setup({ elicit: () => ({ action: 'cancel' }) })
+    const { published } = await s.publishNote(`not shown ${Math.random()}`)
+    expect(published!.isError).toBe(true)
+    expect(published!.text).toMatch(/not shown to the user/); expect(published!.text).toMatch(/interactive session/)
+    expect(s.fake.signRequests).toBe(0)
+    expect(s.audit().map((e) => e.step)).toEqual(['draft', 'not-shown'])
+    const next = await call(s.client, 'draft_event', { kind: 1, content: 'after a question nobody saw' })
+    expect(next.json.warning).toMatch(/never shown/)
+  })
+  it('a question that was answered after a not-shown one clears the warning', async () => {
+    let fast = true
+    const s = await setup({ elicit: async () => { if (fast) { fast = false; return { action: 'cancel' } } await sleep(200); return { action: 'decline' } } })
+    await s.publishNote(`first ${Math.random()}`)
+    await s.publishNote(`second ${Math.random()}`)
+    const next = await call(s.client, 'draft_event', { kind: 1, content: 'warning gone' })
+    expect(next.json.warning).toBeUndefined()
   })
 
   it('without elicitation, a signer that takes a human amount of time is the lock, and publishing works', async () => {

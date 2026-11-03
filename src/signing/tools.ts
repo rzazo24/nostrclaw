@@ -41,6 +41,9 @@ const sha = (s: string) => createHash('sha256').update(s).digest('hex')
 const sameTags = (a: string[][], b: string[][]) => JSON.stringify(a) === JSON.stringify(b)
 const CLAVE = 'https://clave.casa/connect/?uri='
 
+const NOT_SHOWN_HINT = 'this client cannot show it to a person (for example a Claude Code session running in the background). Publish from an interactive session, where the question appears on screen'
+const NOT_SHOWN = `the confirmation question was not shown to the user: ${NOT_SHOWN_HINT}. Nothing was signed or published; make the draft again there`
+
 export function registerSigningTools(server: McpServer, cfg: Config, api: NostrApi, ctx: SigningContext, clock: () => number): void {
   const { policy, audit, signer } = ctx
   const drafts = new Map<string, Draft>()
@@ -132,7 +135,9 @@ export function registerSigningTools(server: McpServer, cfg: Config, api: NostrA
     drafts.set(id, { id, template, hash, expires: clock() + DRAFT_TTL, context })
     while (drafts.size > MAX_DRAFTS) drafts.delete(drafts.keys().next().value!)
     audit.log({ step: 'draft', draftId: id, kind: t.kind, contentHash: hash })
+    const warning = audit.questionNotShownRecently() ? { warning: `The last confirmation question was never shown to the user: ${NOT_SHOWN_HINT}` } : {}
     return {
+      ...warning,
       draftId: id, expiresInMinutes: DRAFT_TTL / 60, contentHash: hash,
       preview: { kind: t.kind, kindName: kindName(t.kind), content: t.content, tags: t.tags },
       ...extra,
@@ -285,14 +290,32 @@ export function registerSigningTools(server: McpServer, cfg: Config, api: NostrA
     const canAsk = !!server.server.getClientCapabilities()?.elicitation
     let approval: 'elicitation' | 'signer' = 'signer'
     if (canAsk) {
-      const asked = await server.server.elicitInput({
-        message:
-          `Publish this ${kindName(draft.template.kind)} (kind ${draft.template.kind}) as ${npub()}?\n\n"${cleanText(draft.template.content, 1000)}"\n\n` +
-          (draft.context ? `${draft.context}\n\n` : '') +
-          `Tags: ${draft.template.tags.length ? cleanText(JSON.stringify(draft.template.tags), 300) : 'none'}\nTo: ${policy.publishRelays.join(', ')}\n\n` +
-          (draft.template.kind === 5 ? 'This ASKS the relays to delete the events above (NIP-09). Relays and people who already copied them may keep them.' : draft.template.kind === 10002 || draft.template.kind === 10050 ? 'This REPLACES your current relay list with the one above (the change is described above); clients will use the new one.' : 'It is public and cannot really be undone.') + '\n\nAFTER YOU ACCEPT, open your signer app (Clave) and keep it on screen: it will ask you to approve the signature, and nostrclaw waits ' + `${Math.round(policy.signTimeoutMs / 60000)} minutes for it.`,
-        requestedSchema: { type: 'object', properties: { publish: { type: 'boolean', title: 'Yes, publish it', description: 'Sign it with my signer and publish it' } }, required: ['publish'] },
-      }, { timeout: 5 * 60_000 })
+      // a client may declare elicitation and still be unable to show it (a Claude Code session running in the background cancels at once):
+      // say so plainly instead of "the user did not confirm", and remember it so the next draft warns even if the client restarts this server
+      const notShown = (why: string) => {
+        audit.log({ step: 'not-shown', draftId, kind: draft.template.kind, detail: why })
+        console.error(`nostrclaw: the confirmation question was not shown to anyone (${why}); nothing was signed or published`)
+        return new Error(`${NOT_SHOWN} (${why})`)
+      }
+      const fastCancel = cfg.signing.fastCancelMs ?? 2000
+      const askedAt = Date.now()
+      let asked
+      try {
+        asked = await server.server.elicitInput({
+          message:
+            `Publish this ${kindName(draft.template.kind)} (kind ${draft.template.kind}) as ${npub()}?\n\n"${cleanText(draft.template.content, 1000)}"\n\n` +
+            (draft.context ? `${draft.context}\n\n` : '') +
+            `Tags: ${draft.template.tags.length ? cleanText(JSON.stringify(draft.template.tags), 300) : 'none'}\nTo: ${policy.publishRelays.join(', ')}\n\n` +
+            (draft.template.kind === 5 ? 'This ASKS the relays to delete the events above (NIP-09). Relays and people who already copied them may keep them.' : draft.template.kind === 10002 || draft.template.kind === 10050 ? 'This REPLACES your current relay list with the one above (the change is described above); clients will use the new one.' : 'It is public and cannot really be undone.') + '\n\nAFTER YOU ACCEPT, open your signer app (Clave) and keep it on screen: it will ask you to approve the signature, and nostrclaw waits ' + `${Math.round(policy.signTimeoutMs / 60000)} minutes for it.`,
+          requestedSchema: { type: 'object', properties: { publish: { type: 'boolean', title: 'Yes, publish it', description: 'Sign it with my signer and publish it' } }, required: ['publish'] },
+        }, { timeout: 5 * 60_000 })
+      } catch (e) {
+        const why = cleanText(e instanceof Error ? e.message : String(e), 150)
+        if (Date.now() - askedAt < fastCancel) throw notShown(`the client could not ask: ${why}`)
+        audit.log({ step: 'declined', draftId, kind: draft.template.kind, contentHash: draft.hash, approval: 'elicitation', detail: why })
+        throw new Error(`the confirmation question got no answer (${why}); nothing was signed or published`)
+      }
+      if (asked.action === 'cancel' && Date.now() - askedAt < fastCancel) throw notShown(`cancelled after ${Date.now() - askedAt} ms, faster than a person`)
       if (asked.action !== 'accept' || asked.content?.publish !== true) {
         audit.log({ step: 'declined', draftId, kind: draft.template.kind, contentHash: draft.hash, approval: 'elicitation' })
         throw new Error('the user did not confirm; nothing was signed or published')

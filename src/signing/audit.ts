@@ -3,7 +3,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-export type AuditStep = 'draft' | 'declined' | 'sign-requested' | 'signed' | 'discarded-auto-approval' | 'rejected' | 'published' | 'refused' | 'preflight-failed' | 'reconnected' | 'retried'
+export type AuditStep = 'draft' | 'declined' | 'sign-requested' | 'signed' | 'discarded-auto-approval' | 'rejected' | 'published' | 'refused' | 'preflight-failed' | 'reconnected' | 'retried' | 'not-shown'
 
 export interface AuditEntry {
   step: AuditStep
@@ -52,6 +52,12 @@ export class Audit {
   /** How many signatures were requested in the last hour (answered or not). */
   signRequestsLastHour(): number {
     return this.recent.filter((e) => e.step === 'sign-requested' && this.now() - e.t < HOUR).length
+  }
+
+  /** True when the last confirmation question of the past hour never reached a person (the client cancelled it at once or failed to ask). */
+  questionNotShownRecently(): boolean {
+    const last = this.recent.filter((e) => this.now() - e.t < HOUR && (e.step === 'not-shown' || e.step === 'declined' || (e.step === 'sign-requested' && e.approval === 'elicitation'))).at(-1)
+    return last?.step === 'not-shown'
   }
 
   /** How many signatures were actually made in the last hour: the number the publications-per-hour limit is about. */

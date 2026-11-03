@@ -59,6 +59,10 @@ A tool argument like `confirm: true` is worthless: the model fills it in. Confir
 
 1. **MCP elicitation** (when the client supports it): the server asks the *user* a yes/no question showing the final event, who it is signed as and
    where it goes. The answer comes through the client UI, not from the model. Without an explicit "yes", nothing is signed.
+   A client can declare elicitation and still not show it: a Claude Code session running in the background cancels the question at once. A cancel faster than
+   `fastCancelMs` (2 s), or an error from the client within that time, is logged as `not-shown` and reported as "not shown to the user, publish from an interactive
+   session" instead of "the user did not confirm"; the next `draft_event` carries a `warning` while that is the latest outcome, because the client may restart the server
+   right after. It never falls back to signer-only approval.
 2. **Without elicitation**: the signer's own approval is the lock — **but it is verified, not trusted**. `publish_event` measures how long the signer
    takes. If the signature comes back faster than `minHumanApprovalMs` (default 2 s) the signer is assumed to approve automatically; the signed event
    is **discarded** (never published, and never shown to the model, so it cannot be published by other means), the attempt is audited, and
