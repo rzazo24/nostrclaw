@@ -12,7 +12,15 @@ import { bytesToHex, hexToBytes } from 'nostr-tools/utils'
 import { normalizeRelayUrl, type Config } from '../config.js'
 import { assertPublicHost, cleanText } from '../safety.js'
 
-useWebSocketImplementation(WebSocket)
+/** nostr-tools closes a socket that is still connecting when its connection timeout fires, and ws then emits 'error'; with no listener that
+ *  kills the whole server (and with it every draft). nostr-tools learns about the failure through onclose anyway, so this listener only keeps the process alive. */
+export class SafeWebSocket extends WebSocket {
+  constructor(...args: ConstructorParameters<typeof WebSocket>) {
+    super(...args)
+    this.on('error', () => {})
+  }
+}
+useWebSocketImplementation(SafeWebSocket)
 
 export type SignerState = 'disconnected' | 'connecting' | 'connected'
 
