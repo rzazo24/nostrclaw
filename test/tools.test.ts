@@ -1,6 +1,6 @@
 // The tools against a pretend network: no sockets, so these are fast and exact.
 import { afterEach, describe, expect, it } from 'vitest'
-import { matchFilter, nip19, type Filter } from 'nostr-tools'
+import { matchFilter, nip19, verifyEvent, type Filter } from 'nostr-tools'
 import type { NostrApi, QueryResult } from '../src/nostr/client.js'
 import { call, cfg, connect, ev, key } from './helpers.js'
 
@@ -32,9 +32,10 @@ describe('tool catalogue', () => {
   it('exposes the expected tools, every one marked read-only and none able to write', async () => {
     const { client } = await setup()
     const { tools } = await client.listTools()
-    expect(tools.map((t) => t.name).sort()).toEqual(['account_triage', 'activity_report', 'author_report', 'compare_relays', 'count_events', 'event_engagement', 'event_locations', 'nostrclaw_status', 'recent_events', 'relay_overview', 'review_interactions', 'trust_score'])
+    expect(tools.map((t) => t.name).sort()).toEqual(['account_triage', 'activity_report', 'author_report', 'compare_relays', 'count_events', 'event_engagement', 'event_locations', 'nostrclaw_status', 'recent_events', 'relay_overview', 'review_interactions', 'trust_score', 'write_probe'])
     for (const t of tools) {
-      expect(t.annotations?.readOnlyHint, t.name).toBe(true)
+      // write_probe sends one ephemeral event from a throwaway key (never the user's): not read-only, but harmless
+      expect(t.annotations?.readOnlyHint, t.name).toBe(t.name !== 'write_probe')
       expect(t.annotations?.destructiveHint, t.name).toBe(false)
       expect(t.description!.length, t.name).toBeGreaterThan(40)
     }
@@ -658,6 +659,32 @@ describe('several relays at once', () => {
     const r = (await call(client, 'count_events', { relays: [A, B], kinds: [1] })).json
     expect(r.counts.map((c: { relay: string; count: number }) => [c.relay, c.count])).toEqual([[A, 2], [B, 1]])
     expect(r.count).toBeUndefined(); expect(r.note).toMatch(/not added up/)
+  })
+})
+
+describe('write_probe', () => {
+  it('sends one ephemeral event from a throwaway key to each relay and reports accepted / refused / no answer, plus how old the newest stored note is', async () => {
+    const author = key()
+    const sent: { relay: string; kind: number; pubkey: string; valid: boolean }[] = []
+    const answers: Record<string, { ok: boolean; reason: string; ms: number }> = {
+      'wss://a.example': { ok: true, reason: '', ms: 40 },
+      'wss://b.example': { ok: false, reason: 'mute: no one was listening', ms: 30 },
+      'wss://c.example': { ok: false, reason: 'no answer from the relay', ms: 20000 },
+    }
+    const { client } = await setup({
+      events: [ev(author, 1, 'hello', NOW - 600)],
+      async publish(relay, event) { sent.push({ relay, kind: event.kind, pubkey: event.pubkey, valid: verifyEvent(event) }); return answers[relay]! },
+    }, cfg({ relays: Object.keys(answers) }))
+    const r = await call(client, 'write_probe', {})
+    expect(sent.map((s) => s.relay).sort()).toEqual(Object.keys(answers))
+    expect(new Set(sent.map((s) => s.pubkey)).size).toBe(1)
+    for (const s of sent) { expect(s.kind).toBeGreaterThanOrEqual(20000); expect(s.kind).toBeLessThan(30000); expect(s.valid).toBe(true); expect(s.pubkey).not.toBe(author.pk) }
+    expect(r.isError, r.text).toBe(false)
+    const by = Object.fromEntries(r.json.results.map((x: { relay: string }) => [x.relay, x]))
+    expect(by['wss://a.example'].write.result).toBe('accepted')
+    expect(by['wss://b.example'].write).toMatchObject({ result: 'refused', reason: 'mute: no one was listening' })
+    expect(by['wss://c.example'].write.result).toBe('no answer')
+    expect(by['wss://a.example'].read.newestNoteAgeMinutes).toBe(10)
   })
 })
 

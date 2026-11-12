@@ -1,5 +1,5 @@
-// A small read-only Nostr client: one short-lived connection per call. It never authenticates and never publishes (signing is a
-// separate, later feature). Every event it returns has had its signature and id verified; invalid ones are counted and dropped.
+// A small Nostr client: one short-lived connection per call. It never authenticates; it publishes only what the signing tools
+// hand it and write_probe's ephemeral test event. Every event it returns has had its signature and id verified; invalid ones are counted and dropped.
 import WebSocket from 'ws'
 import { verifyEvent, type Event, type Filter } from 'nostr-tools'
 

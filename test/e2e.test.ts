@@ -141,7 +141,7 @@ describe.skipIf(!bin)('against the real relay', () => {
     transport.stderr?.on('data', (d) => { stderr += d })
     await client.connect(transport)
     const { tools } = await client.listTools()
-    expect(tools).toHaveLength(12)
+    expect(tools).toHaveLength(13)
     const r = await client.callTool({ name: 'recent_events', arguments: { kinds: [7], limit: 5 } })
     expect(r.isError).toBeFalsy()
     expect(JSON.parse((r.content as { text: string }[])[0]!.text).returned).toBe(1)
